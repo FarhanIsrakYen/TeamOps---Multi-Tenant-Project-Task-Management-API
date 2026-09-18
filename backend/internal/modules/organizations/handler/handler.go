@@ -8,6 +8,7 @@ import (
 	orgsvc "github.com/example/teamops/backend/internal/modules/organizations/service"
 	"github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
+	sharedrequest "github.com/example/teamops/backend/internal/shared/request"
 	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,7 +30,7 @@ func IDs(c *gin.Context) (uuid.UUID, uuid.UUID, error) {
 }
 func (h *Handler) List(c *gin.Context) {
 	uid := c.MustGet("user_id").(uuid.UUID)
-	p := pagination.From(c, map[string]bool{"name": true, "createdAt": true}, "createdAt")
+	p := pagination.From(c, map[string]bool{"name": true, "created_at": true}, "created_at")
 	items, total, err := h.service.List(c, uid, p)
 	if err != nil {
 		response.Error(c, err)
@@ -39,8 +40,8 @@ func (h *Handler) List(c *gin.Context) {
 }
 func (h *Handler) Create(c *gin.Context) {
 	var req dto.CreateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err := sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
 	uid := c.MustGet("user_id").(uuid.UUID)
@@ -71,8 +72,8 @@ func (h *Handler) Update(c *gin.Context) {
 		return
 	}
 	var req dto.UpdateRequest
-	if err = c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err = sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
 	o, err := h.service.Update(c, uid, oid, req.Name, req.Slug, req.Version, c.GetString("request_id"))
@@ -88,7 +89,7 @@ func (h *Handler) Delete(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	if err = h.service.Delete(c, uid, oid); err != nil {
+	if err = h.service.Delete(c, uid, oid, c.GetString("request_id")); err != nil {
 		response.Error(c, err)
 		return
 	}
@@ -114,8 +115,8 @@ func (h *Handler) AddMember(c *gin.Context) {
 		return
 	}
 	var req dto.AddMemberRequest
-	if err = c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err = sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
 	m, err := h.service.AddMember(c, uid, oid, req.Email, model.Role(req.Role), c.GetString("request_id"))
@@ -124,4 +125,22 @@ func (h *Handler) AddMember(c *gin.Context) {
 		return
 	}
 	response.Created(c, dto.FromMembership(m))
+}
+
+func (h *Handler) RemoveMember(c *gin.Context) {
+	uid, oid, err := IDs(c)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	memberID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		response.Error(c, apperror.ErrValidation)
+		return
+	}
+	if err = h.service.RemoveMember(c, uid, oid, memberID, c.GetString("request_id")); err != nil {
+		response.Error(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

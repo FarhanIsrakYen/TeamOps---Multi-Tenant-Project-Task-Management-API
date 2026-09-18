@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/example/teamops/backend/internal/cache"
 	orgguard "github.com/example/teamops/backend/internal/modules/organizations/guard"
@@ -35,7 +36,7 @@ func (r *projectRepository) Create(_ context.Context, organizationID uuid.UUID, 
 func (r *projectRepository) Get(context.Context, uuid.UUID) (projectmodel.Project, error) {
 	return projectmodel.Project{}, pgx.ErrNoRows
 }
-func (r *projectRepository) List(context.Context, uuid.UUID, pagination.Params, *bool) ([]projectmodel.Project, int64, error) {
+func (r *projectRepository) List(context.Context, uuid.UUID, pagination.Params, projectmodel.Filters) ([]projectmodel.Project, int64, error) {
 	return nil, 0, nil
 }
 func (r *projectRepository) Update(context.Context, uuid.UUID, string, string, bool, int) (projectmodel.Project, error) {
@@ -66,11 +67,11 @@ func TestOnlyOwnerAndAdminCanManageProjects(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			userID := uuid.New()
 			repository := &projectRepository{}
-			organizations := orgguard.New(projectMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: tt.role}})
+			organizations := orgguard.New(projectMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: tt.role}}, nil, 0)
 			access := projectguard.New(organizations)
 			projectCache := cache.New("127.0.0.1:0", "")
 			t.Cleanup(func() { _ = projectCache.Close() })
-			service := New(repository, organizations, access, projectCache, projectAuditor{})
+			service := New(repository, organizations, access, projectCache, time.Minute, projectAuditor{})
 
 			_, err := service.Create(context.Background(), userID, organizationID, "Project", "", "request")
 			if tt.allowed {

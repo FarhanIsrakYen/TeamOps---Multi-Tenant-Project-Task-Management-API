@@ -7,6 +7,7 @@ import (
 
 	"github.com/example/teamops/backend/internal/database"
 	authmodel "github.com/example/teamops/backend/internal/modules/auth/model"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -59,11 +60,19 @@ func (r *Repository) RotateSession(ctx context.Context, hash []byte, next authmo
 	}
 	return old, nil
 }
-func (r *Repository) RevokeSession(ctx context.Context, hash []byte) error {
-	_, err := database.Executor(ctx, r.db).Exec(ctx, `UPDATE refresh_tokens
-		SET revoked_at=COALESCE(revoked_at,now())
-		WHERE family_id=(SELECT family_id FROM refresh_tokens WHERE token_hash=$1)`, hash)
-	return err
+func (r *Repository) RevokeSession(ctx context.Context, hash []byte) (uuid.UUID, error) {
+	var userID uuid.UUID
+	err := database.Executor(ctx, r.db).QueryRow(ctx, `WITH target AS (
+		SELECT family_id,user_id FROM refresh_tokens WHERE token_hash=$1
+	), revoked AS (
+		UPDATE refresh_tokens SET revoked_at=COALESCE(revoked_at,now())
+		WHERE family_id=(SELECT family_id FROM target)
+	)
+	SELECT user_id FROM target`, hash).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, nil
+	}
+	return userID, err
 }
 func (r *Repository) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	tag, err := database.Executor(ctx, r.db).Exec(ctx, `DELETE FROM refresh_tokens WHERE expires_at < now()-interval '1 day'`)

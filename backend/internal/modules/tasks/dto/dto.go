@@ -10,21 +10,21 @@ import (
 )
 
 type CreateRequest struct {
-	Title       string     `json:"title" binding:"required,min=2,max=200"`
-	Description string     `json:"description" binding:"max=10000"`
-	AssigneeID  *uuid.UUID `json:"assigneeId"`
+	Title       string             `json:"title" binding:"required,min=2,max=200"`
+	Description string             `json:"description" binding:"max=10000"`
+	AssigneeID  *uuid.UUID         `json:"assigneeId"`
 	Status      taskmodel.Status   `json:"status" binding:"omitempty,oneof=TODO"`
 	Priority    taskmodel.Priority `json:"priority" binding:"omitempty,oneof=LOW MEDIUM HIGH URGENT"`
-	DueAt       *time.Time `json:"dueAt"`
+	DueAt       *time.Time         `json:"dueAt"`
 }
 type UpdateRequest struct {
-	Title       *string            `json:"title" binding:"omitempty,min=2,max=200"`
-	Description *string            `json:"description" binding:"omitempty,max=10000"`
-	AssigneeID  NullableUUID       `json:"assigneeId"`
-	Status      *taskmodel.Status  `json:"status" binding:"omitempty,oneof=TODO IN_PROGRESS IN_REVIEW DONE CANCELLED"`
+	Title       *string             `json:"title" binding:"omitempty,min=2,max=200"`
+	Description *string             `json:"description" binding:"omitempty,max=10000"`
+	AssigneeID  NullableUUID        `json:"assigneeId"`
+	Status      *taskmodel.Status   `json:"status" binding:"omitempty,oneof=TODO IN_PROGRESS IN_REVIEW DONE CANCELLED"`
 	Priority    *taskmodel.Priority `json:"priority" binding:"omitempty,oneof=LOW MEDIUM HIGH URGENT"`
-	DueAt       NullableTime       `json:"dueAt"`
-	Version     int                `json:"version" binding:"required,min=1"`
+	DueAt       NullableTime        `json:"dueAt"`
+	Version     int                 `json:"version" binding:"required,min=1"`
 }
 
 type NullableUUID struct {
@@ -64,6 +64,7 @@ func (v *NullableTime) UnmarshalJSON(data []byte) error {
 	v.Value = &value
 	return nil
 }
+
 type CommentRequest struct {
 	Body string `json:"body" binding:"required,min=1,max=5000"`
 }
@@ -76,19 +77,19 @@ type SetLabelsRequest struct {
 }
 
 type TaskResponse struct {
-	ID             uuid.UUID  `json:"id"`
-	OrganizationID uuid.UUID  `json:"organizationId"`
-	ProjectID      uuid.UUID  `json:"projectId"`
-	AssigneeID     *uuid.UUID `json:"assigneeId,omitempty"`
-	CreatedBy      uuid.UUID  `json:"createdBy"`
-	Title          string     `json:"title"`
-	Description    string     `json:"description"`
+	ID             uuid.UUID          `json:"id"`
+	OrganizationID uuid.UUID          `json:"organizationId"`
+	ProjectID      uuid.UUID          `json:"projectId"`
+	AssigneeID     *uuid.UUID         `json:"assigneeId,omitempty"`
+	CreatedBy      uuid.UUID          `json:"createdBy"`
+	Title          string             `json:"title"`
+	Description    string             `json:"description"`
 	Status         taskmodel.Status   `json:"status"`
 	Priority       taskmodel.Priority `json:"priority"`
-	DueAt          *time.Time `json:"dueAt,omitempty"`
-	Version        int        `json:"version"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
+	DueAt          *time.Time         `json:"dueAt,omitempty"`
+	Version        int                `json:"version"`
+	CreatedAt      time.Time          `json:"createdAt"`
+	UpdatedAt      time.Time          `json:"updatedAt"`
 }
 type CommentResponse struct {
 	ID        uuid.UUID `json:"id"`

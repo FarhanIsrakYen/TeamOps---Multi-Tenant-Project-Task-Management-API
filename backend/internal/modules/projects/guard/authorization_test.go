@@ -32,7 +32,7 @@ func TestRequireProjectAccessPreventsCrossOrganizationAccess(t *testing.T) {
 	projectOrganizationID := uuid.New()
 	organizations := orgguard.New(memberships{roles: map[[2]uuid.UUID]orgmodel.Role{
 		{memberOrganizationID, userID}: orgmodel.RoleOwner,
-	}})
+	}}, nil, 0)
 	guard := New(organizations)
 	project := projectmodel.Project{ID: uuid.New(), OrganizationID: projectOrganizationID}
 
@@ -46,7 +46,7 @@ func TestRequireProjectAccessHandlesAllowedAndMissingResources(t *testing.T) {
 	organizationID := uuid.New()
 	organizations := orgguard.New(memberships{roles: map[[2]uuid.UUID]orgmodel.Role{
 		{organizationID, userID}: orgmodel.RoleViewer,
-	}})
+	}}, nil, 0)
 	guard := New(organizations)
 
 	err := guard.RequireProjectAccess(context.Background(), userID, projectmodel.Project{ID: uuid.New(), OrganizationID: organizationID}, orgguard.ReadOrganization)

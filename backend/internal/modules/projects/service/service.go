@@ -42,17 +42,17 @@ type ProjectAuthorizer interface {
 	RequireProjectAccess(context.Context, uuid.UUID, model.Project, orgguard.Permission) error
 }
 type Service struct {
-	repo   Repository
-	orgs   OrganizationAuthorizer
-	access ProjectAuthorizer
-	cache  *cache.Cache
-	audit  Auditor
+	repo     Repository
+	orgs     OrganizationAuthorizer
+	access   ProjectAuthorizer
+	cache    cache.Store
+	cacheTTL time.Duration
+	audit    Auditor
 }
 
-func New(r Repository, o OrganizationAuthorizer, access ProjectAuthorizer, c *cache.Cache, a Auditor) *Service {
-	return &Service{repo: r, orgs: o, access: access, cache: c, audit: a}
+func New(r Repository, o OrganizationAuthorizer, access ProjectAuthorizer, c cache.Store, cacheTTL time.Duration, a Auditor) *Service {
+	return &Service{repo: r, orgs: o, access: access, cache: c, cacheTTL: cacheTTL, audit: a}
 }
-func key(id uuid.UUID) string { return "project:" + id.String() }
 func (s *Service) Create(ctx context.Context, userID, orgID uuid.UUID, name, description, requestID string) (model.Project, error) {
 	if _, err := s.orgs.RequireOrganizationPermission(ctx, userID, orgID, orgguard.ManageProjects); err != nil {
 		return model.Project{}, err
@@ -83,7 +83,12 @@ func (s *Service) List(ctx context.Context, userID, orgID uuid.UUID, p paginatio
 }
 func (s *Service) Get(ctx context.Context, userID, id uuid.UUID) (model.Project, error) {
 	var p model.Project
-	if ok, _ := s.cache.GetJSON(ctx, key(id), &p); !ok {
+	key := cache.ProjectKey(id.String())
+	hit := false
+	if s.cache != nil && s.cacheTTL > 0 {
+		hit, _ = s.cache.GetJSON(ctx, key, &p)
+	}
+	if !hit {
 		var err error
 		p, err = s.repo.Get(ctx, id)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -92,7 +97,9 @@ func (s *Service) Get(ctx context.Context, userID, id uuid.UUID) (model.Project,
 		if err != nil {
 			return p, err
 		}
-		_ = s.cache.SetJSON(ctx, key(id), p, 5*time.Minute)
+		if s.cache != nil && s.cacheTTL > 0 {
+			_ = s.cache.SetJSON(ctx, key, p, s.cacheTTL)
+		}
 	}
 	if err := s.access.RequireProjectAccess(ctx, userID, p, orgguard.ReadOrganization); err != nil {
 		return model.Project{}, err
@@ -112,6 +119,12 @@ func (s *Service) Update(ctx context.Context, userID, id uuid.UUID, input Update
 	}
 	if input.Version < 1 {
 		return current, apperror.New(400, "invalid_version", "version must be a positive integer")
+	}
+	if input.Version != current.Version {
+		return current, apperror.New(409, "version_conflict", "project was modified by another request")
+	}
+	if input.Name == nil && input.Description == nil && input.Archived == nil {
+		return current, apperror.New(400, "empty_update", "at least one project field must be provided")
 	}
 	name, description, archived := current.Name, current.Description, current.Archived
 	if input.Name != nil {
@@ -134,7 +147,7 @@ func (s *Service) Update(ctx context.Context, userID, id uuid.UUID, input Update
 		return p, apperror.New(409, "project_name_conflict", "project name is already in use in this organization")
 	}
 	if err == nil {
-		_ = s.cache.Delete(ctx, key(id))
+		s.invalidate(ctx, id)
 		_ = s.audit.Record(ctx, p.OrganizationID, userID, "project.updated", "project", id.String(), requestID, map[string]any{"version": p.Version})
 	}
 	return p, err
@@ -168,7 +181,13 @@ func (s *Service) Delete(ctx context.Context, userID, id uuid.UUID, requestID st
 	if err = s.repo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete project: %w", err)
 	}
-	_ = s.cache.Delete(ctx, key(id))
+	s.invalidate(ctx, id)
 	_ = s.audit.Record(ctx, p.OrganizationID, userID, "project.deleted", "project", id.String(), requestID, nil)
 	return nil
+}
+
+func (s *Service) invalidate(ctx context.Context, id uuid.UUID) {
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx, cache.ProjectKey(id.String()))
+	}
 }

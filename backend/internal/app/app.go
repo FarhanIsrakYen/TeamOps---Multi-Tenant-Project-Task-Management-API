@@ -33,8 +33,8 @@ import (
 	userssvc "github.com/example/teamops/backend/internal/modules/users/service"
 	"github.com/example/teamops/backend/internal/platform/openapi"
 	sharedauth "github.com/example/teamops/backend/internal/shared/auth"
+	"github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/response"
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -44,6 +44,7 @@ import (
 type App struct {
 	Router         *gin.Engine
 	AuthRepository *authrepo.Repository
+	AuditRecorder  *auditsvc.Recorder
 }
 
 func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zerolog.Logger) *App {
@@ -51,23 +52,33 @@ func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zero
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
+	_ = r.SetTrustedProxies(cfg.TrustedProxies)
+	r.HandleMethodNotAllowed = true
 	middleware.RegisterMetrics()
-	r.Use(middleware.RequestID(), middleware.Recovery(log), middleware.Logging(log), middleware.Metrics(), cors.New(cors.Config{AllowOrigins: cfg.CORSOrigins, AllowMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"}, AllowHeaders: []string{"Authorization", "Content-Type", "X-Request-ID"}, ExposeHeaders: []string{"X-Request-ID"}, MaxAge: 12 * time.Hour}))
+	r.Use(
+		middleware.RequestID(),
+		middleware.Recovery(log),
+		middleware.SecureHeaders(cfg.Environment == "production"),
+		middleware.Logging(log),
+		middleware.Metrics(),
+		middleware.CORS(cfg.CORSOrigins),
+		middleware.BodyLimit(cfg.RequestBodyMaxBytes),
+	)
 	healthHandler := func(c *gin.Context) { response.OK(c, gin.H{"status": "ok"}) }
 	readyHandler := func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c, 2*time.Second)
 		defer cancel()
 		if err := db.Ping(ctx); err != nil {
 			log.Error().Err(err).Msg("readiness database check failed")
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unready", "checks": gin.H{"database": "fail"}})
+			response.Error(c, apperror.New(http.StatusServiceUnavailable, "not_ready", "service is not ready"))
 			return
 		}
 		if err := cacheClient.Ping(ctx); err != nil {
-			log.Error().Err(err).Msg("readiness redis check failed")
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unready", "checks": gin.H{"redis": "fail"}})
+			log.Warn().Err(err).Msg("readiness redis check degraded")
+			response.OK(c, gin.H{"status": "ready", "checks": gin.H{"database": "ok", "redis": "degraded"}})
 			return
 		}
-		response.OK(c, gin.H{"status": "ready"})
+		response.OK(c, gin.H{"status": "ready", "checks": gin.H{"database": "ok", "redis": "ok"}})
 	}
 	r.GET("/health", healthHandler)
 	r.GET("/ready", readyHandler)
@@ -77,32 +88,35 @@ func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zero
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	r.GET("/openapi.yaml", func(c *gin.Context) { c.Data(http.StatusOK, "application/yaml", openapi.Document) })
 	auditRepository := auditrepo.New(db)
+	auditRecorder := auditsvc.NewRecorder(auditRepository, log, cfg.AuditQueueSize, cfg.AuditWorkers, cfg.AuditWriteTimeout)
 	authRepository := authrepo.New(db)
 	usersRepository := usersrepo.New(db)
 	orgRepository := orgrepo.New(db)
 	projectRepository := projectrepo.New(db)
 	taskRepository := taskrepo.New(db)
 	tokens := sharedauth.NewTokenManager(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience, cfg.AccessTokenTTL)
-	authService := authsvc.New(usersRepository, authRepository, database.NewTransactor(db), tokens, cfg.RefreshTokenTTL, cfg.PasswordHashCost)
-	organizationGuard := orgguard.New(orgRepository)
+	authService := authsvc.New(usersRepository, authRepository, database.NewTransactor(db), tokens, cfg.RefreshTokenTTL, cfg.PasswordHashCost, auditRecorder)
+	loginProtector := authguard.NewLoginProtector(cacheClient, cfg.LoginFailureLimit, cfg.LoginFailureWindow)
+	organizationGuard := orgguard.New(orgRepository, cacheClient, cfg.MembershipCacheTTL)
 	projectGuard := projectguard.New(organizationGuard)
 	taskGuard := taskguard.New(organizationGuard)
-	orgService := orgsvc.New(orgRepository, auditRepository, database.NewTransactor(db), organizationGuard)
-	projectService := projectsvc.New(projectRepository, organizationGuard, projectGuard, cacheClient, auditRepository)
-	taskService := tasksvc.New(taskRepository, taskRepository, taskRepository, projectRepository, organizationGuard, projectGuard, taskGuard, auditRepository)
+	orgService := orgsvc.New(orgRepository, auditRecorder, database.NewTransactor(db), organizationGuard, cacheClient, cfg.OrganizationCacheTTL)
+	projectService := projectsvc.New(projectRepository, organizationGuard, projectGuard, cacheClient, cfg.ProjectCacheTTL, auditRecorder)
+	taskService := tasksvc.New(taskRepository, taskRepository, taskRepository, projectRepository, organizationGuard, projectGuard, taskGuard, auditRecorder)
 	auditService := auditsvc.New(auditRepository, organizationGuard)
 	usersService := userssvc.New(usersRepository)
-	authH := authhandler.New(authService)
+	authH := authhandler.New(authService, loginProtector)
 	orgH := orghandler.New(orgService)
 	projectH := projecthandler.New(projectService)
 	taskH := taskhandler.New(taskService)
 	auditH := audithandler.New(auditService)
 	usersH := usershandler.New(usersService)
 	v1 := r.Group("/api/v1")
-	v1.Use(middleware.RateLimit(cacheClient, cfg.RateLimitPerMin))
+	v1.Use(middleware.RateLimit(cacheClient, "api", cfg.RateLimitPerMin, time.Minute))
 	authRoutes := v1.Group("/auth")
+	authRoutes.Use(middleware.RateLimit(cacheClient, "auth", cfg.AuthRateLimitPerMin, time.Minute))
 	authRoutes.POST("/register", authH.Register)
-	authRoutes.POST("/login", authH.Login)
+	authRoutes.POST("/login", middleware.RateLimit(cacheClient, "login", cfg.LoginRateLimitPerMin, time.Minute), authH.Login)
 	authRoutes.POST("/refresh", authH.Refresh)
 	authRoutes.POST("/logout", authH.Logout)
 	secured := v1.Group("")
@@ -115,6 +129,7 @@ func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zero
 	secured.DELETE("/organizations/:organizationId", orgH.Delete)
 	secured.GET("/organizations/:organizationId/members", orgH.Members)
 	secured.POST("/organizations/:organizationId/members", orgH.AddMember)
+	secured.DELETE("/organizations/:organizationId/members/:userId", orgH.RemoveMember)
 	secured.GET("/organizations/:organizationId/projects", projectH.List)
 	secured.POST("/organizations/:organizationId/projects", projectH.Create)
 	secured.GET("/projects/:projectId", projectH.Get)
@@ -132,7 +147,10 @@ func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zero
 	secured.POST("/organizations/:organizationId/labels", taskH.CreateLabel)
 	secured.GET("/organizations/:organizationId/audit-logs", auditH.List)
 	r.NoRoute(func(c *gin.Context) {
-		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "route_not_found", "message": "route not found", "requestId": c.GetString("request_id")}})
+		response.Error(c, apperror.New(http.StatusNotFound, "route_not_found", "route not found"))
 	})
-	return &App{Router: r, AuthRepository: authRepository}
+	r.NoMethod(func(c *gin.Context) {
+		response.Error(c, apperror.New(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed"))
+	})
+	return &App{Router: r, AuthRepository: authRepository, AuditRecorder: auditRecorder}
 }

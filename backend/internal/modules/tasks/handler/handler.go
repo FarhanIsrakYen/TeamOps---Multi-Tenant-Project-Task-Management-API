@@ -8,6 +8,7 @@ import (
 	tasksvc "github.com/example/teamops/backend/internal/modules/tasks/service"
 	"github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
+	sharedrequest "github.com/example/teamops/backend/internal/shared/request"
 	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -31,12 +32,12 @@ func (h *Handler) Create(c *gin.Context) {
 		return
 	}
 	var req dto.CreateRequest
-	if err = c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err = sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
 	t := model.Task{Title: req.Title, Description: req.Description, AssigneeID: req.AssigneeID, Status: req.Status, Priority: req.Priority, DueAt: req.DueAt}
-	t, err = h.service.Create(c, uid(c), pid, t, c.GetString("request_id"))
+	t, err = h.service.Create(c.Request.Context(), uid(c), pid, t, c.GetString("request_id"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -49,25 +50,21 @@ func (h *Handler) List(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	p := pagination.From(c, map[string]bool{"createdAt": true, "updatedAt": true, "dueAt": true, "priority": true, "title": true}, "createdAt")
-	f := model.Filters{Status: c.Query("status"), Priority: c.Query("priority"), Search: c.Query("search")}
-	if f.Status != "" && !map[string]bool{"TODO": true, "IN_PROGRESS": true, "DONE": true, "CANCELLED": true}[f.Status] {
-		response.Error(c, apperror.ErrValidation)
-		return
+	p := pagination.From(c, map[string]bool{"created_at": true, "updated_at": true, "due_at": true, "priority": true, "title": true}, "created_at")
+	f := model.Filters{Status: model.Status(c.Query("status")), Priority: model.Priority(c.Query("priority")), Search: c.Query("search")}
+	rawAssignee := c.Query("assignee_id")
+	if rawAssignee == "" {
+		rawAssignee = c.Query("assigneeId")
 	}
-	if f.Priority != "" && !map[string]bool{"LOW": true, "MEDIUM": true, "HIGH": true, "URGENT": true}[f.Priority] {
-		response.Error(c, apperror.ErrValidation)
-		return
-	}
-	if raw := c.Query("assigneeId"); raw != "" {
-		id, e := uuid.Parse(raw)
+	if rawAssignee != "" {
+		id, e := uuid.Parse(rawAssignee)
 		if e != nil {
 			response.Error(c, apperror.ErrValidation)
 			return
 		}
 		f.AssigneeID = &id
 	}
-	items, total, err := h.service.List(c, uid(c), pid, p, f)
+	items, total, err := h.service.List(c.Request.Context(), uid(c), pid, p, f)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -80,7 +77,7 @@ func (h *Handler) Get(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	t, err := h.service.Get(c, uid(c), id)
+	t, err := h.service.Get(c.Request.Context(), uid(c), id)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -94,12 +91,12 @@ func (h *Handler) Update(c *gin.Context) {
 		return
 	}
 	var req dto.UpdateRequest
-	if err = c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err = sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
-	t := model.Task{Title: req.Title, Description: req.Description, AssigneeID: req.AssigneeID, Status: req.Status, Priority: req.Priority, DueAt: req.DueAt, Version: req.Version}
-	t, err = h.service.Update(c, uid(c), id, t, c.GetString("request_id"))
+	input := tasksvc.UpdateInput{Title: req.Title, Description: req.Description, AssigneeSet: req.AssigneeID.Set, AssigneeID: req.AssigneeID.Value, Status: req.Status, Priority: req.Priority, DueAtSet: req.DueAt.Set, DueAt: req.DueAt.Value, Version: req.Version}
+	t, err := h.service.Update(c.Request.Context(), uid(c), id, input, c.GetString("request_id"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -112,7 +109,7 @@ func (h *Handler) Delete(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	if err = h.service.Delete(c, uid(c), id, c.GetString("request_id")); err != nil {
+	if err = h.service.Delete(c.Request.Context(), uid(c), id, c.GetString("request_id")); err != nil {
 		response.Error(c, err)
 		return
 	}
@@ -124,7 +121,7 @@ func (h *Handler) Comments(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	items, err := h.service.Comments(c, uid(c), id)
+	items, err := h.service.Comments(c.Request.Context(), uid(c), id)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -138,11 +135,11 @@ func (h *Handler) AddComment(c *gin.Context) {
 		return
 	}
 	var req dto.CommentRequest
-	if err = c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err = sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
-	item, err := h.service.AddComment(c, uid(c), id, req.Body, c.GetString("request_id"))
+	item, err := h.service.AddComment(c.Request.Context(), uid(c), id, req.Body, c.GetString("request_id"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -155,7 +152,7 @@ func (h *Handler) Labels(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	items, err := h.service.Labels(c, uid(c), id)
+	items, err := h.service.Labels(c.Request.Context(), uid(c), id)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -169,11 +166,11 @@ func (h *Handler) CreateLabel(c *gin.Context) {
 		return
 	}
 	var req dto.LabelRequest
-	if err = c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err = sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
-	item, err := h.service.CreateLabel(c, uid(c), id, req.Name, req.Color)
+	item, err := h.service.CreateLabel(c.Request.Context(), uid(c), id, req.Name, req.Color, c.GetString("request_id"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -187,11 +184,11 @@ func (h *Handler) SetLabels(c *gin.Context) {
 		return
 	}
 	var req dto.SetLabelsRequest
-	if err = c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err = sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
-	if err = h.service.SetLabels(c, uid(c), id, req.LabelIDs); err != nil {
+	if err = h.service.SetLabels(c.Request.Context(), uid(c), id, req.LabelIDs, c.GetString("request_id")); err != nil {
 		response.Error(c, err)
 		return
 	}

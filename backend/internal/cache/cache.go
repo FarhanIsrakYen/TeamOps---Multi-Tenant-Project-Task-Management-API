@@ -2,19 +2,58 @@ package cache
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+const keyPrefix = "teamops:v1"
+
+type Store interface {
+	GetJSON(context.Context, string, any) (bool, error)
+	SetJSON(context.Context, string, any, time.Duration) error
+	Delete(context.Context, ...string) error
+}
+
+func OrganizationKey(organizationID string) string {
+	return keyPrefix + ":organization:" + organizationID
+}
+
+func ProjectKey(projectID string) string {
+	return keyPrefix + ":project:" + projectID
+}
+
+func MembershipKey(organizationID, userID string) string {
+	return keyPrefix + ":membership:" + organizationID + ":" + userID
+}
+
+func RateLimitKey(scope, identity string, bucket int64) string {
+	digest := sha256.Sum256([]byte(identity))
+	return keyPrefix + ":rate:" + scope + ":" + fmt.Sprintf("%x", digest[:12]) + ":" + strconv.FormatInt(bucket, 10)
+}
+
+func LoginAttemptKey(kind, identity string) string {
+	digest := sha256.Sum256([]byte(identity))
+	return keyPrefix + ":login-attempt:" + kind + ":" + fmt.Sprintf("%x", digest[:12])
+}
 
 // Cache owns the Redis client. It is constructed in main and passed to its
 // consumers; no package-level connection is used.
 type Cache struct{ client *redis.Client }
 
 func New(addr, password string) *Cache {
-	return &Cache{client: redis.NewClient(&redis.Options{Addr: addr, Password: password})}
+	return &Cache{client: redis.NewClient(&redis.Options{
+		Addr:         addr,
+		Password:     password,
+		DialTimeout:  500 * time.Millisecond,
+		ReadTimeout:  500 * time.Millisecond,
+		WriteTimeout: 500 * time.Millisecond,
+		MaxRetries:   1,
+	})}
 }
 
 func (c *Cache) Ping(ctx context.Context) error { return c.client.Ping(ctx).Err() }

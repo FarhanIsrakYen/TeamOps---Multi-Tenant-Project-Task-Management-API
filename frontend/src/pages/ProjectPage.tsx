@@ -6,6 +6,7 @@ import type { Envelope, Project, Task, TaskStatus } from "../types";
 const columns: { status: TaskStatus; label: string }[] = [
   { status: "TODO", label: "To do" },
   { status: "IN_PROGRESS", label: "In progress" },
+  { status: "IN_REVIEW", label: "In review" },
   { status: "DONE", label: "Done" },
   { status: "CANCELLED", label: "Cancelled" },
 ];
@@ -26,7 +27,7 @@ export function ProjectPage() {
     queryFn: async () =>
       (
         await api.get<Envelope<Task[]>>(
-          `/projects/${projectId}/tasks?pageSize=100&sort=updatedAt`,
+          `/projects/${projectId}/tasks?page_size=100&sort=-updated_at`,
         )
       ).data.data,
   });

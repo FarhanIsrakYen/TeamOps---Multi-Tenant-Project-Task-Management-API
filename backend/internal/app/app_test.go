@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,6 +15,7 @@ import (
 func TestHealthEndpointDoesNotRequireInfrastructure(t *testing.T) {
 	t.Parallel()
 	a := New(config.Config{Environment: "test", CORSOrigins: []string{"http://localhost"}}, nil, cache.New("127.0.0.1:0", ""), zerolog.Nop())
+	t.Cleanup(func() { _ = a.AuditRecorder.Close(context.Background()) })
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	request.Header.Set("X-Request-ID", "test-request-id")
@@ -28,6 +30,7 @@ func TestHealthEndpointDoesNotRequireInfrastructure(t *testing.T) {
 func TestHealthEndpointGeneratesRequestID(t *testing.T) {
 	t.Parallel()
 	a := New(config.Config{Environment: "test", CORSOrigins: []string{"http://localhost"}}, nil, cache.New("127.0.0.1:0", ""), zerolog.Nop())
+	t.Cleanup(func() { _ = a.AuditRecorder.Close(context.Background()) })
 	recorder := httptest.NewRecorder()
 
 	a.Router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))

@@ -5,9 +5,11 @@ import (
 	"strconv"
 
 	"github.com/example/teamops/backend/internal/modules/projects/dto"
+	"github.com/example/teamops/backend/internal/modules/projects/model"
 	projectsvc "github.com/example/teamops/backend/internal/modules/projects/service"
 	"github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
+	sharedrequest "github.com/example/teamops/backend/internal/shared/request"
 	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -30,11 +32,11 @@ func (h *Handler) Create(c *gin.Context) {
 		return
 	}
 	var req dto.CreateRequest
-	if err = c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err = sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
-	p, err := h.service.Create(c, c.MustGet("user_id").(uuid.UUID), oid, req.Name, req.Description, c.GetString("request_id"))
+	p, err := h.service.Create(c.Request.Context(), c.MustGet("user_id").(uuid.UUID), oid, req.Name, req.Description, c.GetString("request_id"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -47,7 +49,7 @@ func (h *Handler) List(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	p := pagination.From(c, map[string]bool{"name": true, "createdAt": true, "updatedAt": true}, "createdAt")
+	p := pagination.From(c, map[string]bool{"name": true, "created_at": true, "updated_at": true}, "created_at")
 	var archived *bool
 	if raw, ok := c.GetQuery("archived"); ok {
 		v, e := strconv.ParseBool(raw)
@@ -57,7 +59,8 @@ func (h *Handler) List(c *gin.Context) {
 		}
 		archived = &v
 	}
-	items, total, err := h.service.List(c, c.MustGet("user_id").(uuid.UUID), oid, p, archived)
+	filters := model.Filters{Archived: archived, Search: c.Query("search")}
+	items, total, err := h.service.List(c.Request.Context(), c.MustGet("user_id").(uuid.UUID), oid, p, filters)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -70,7 +73,7 @@ func (h *Handler) Get(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	p, err := h.service.Get(c, c.MustGet("user_id").(uuid.UUID), id)
+	p, err := h.service.Get(c.Request.Context(), c.MustGet("user_id").(uuid.UUID), id)
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -84,11 +87,12 @@ func (h *Handler) Update(c *gin.Context) {
 		return
 	}
 	var req dto.UpdateRequest
-	if err = c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, apperror.ErrValidation)
+	if err = sharedrequest.BindJSON(c, &req); err != nil {
+		response.Error(c, err)
 		return
 	}
-	p, err := h.service.Update(c, c.MustGet("user_id").(uuid.UUID), id, req.Name, req.Description, req.Archived, req.Version, c.GetString("request_id"))
+	input := projectsvc.UpdateInput{Name: req.Name, Description: req.Description, Archived: req.Archived, Version: req.Version}
+	p, err := h.service.Update(c.Request.Context(), c.MustGet("user_id").(uuid.UUID), id, input, c.GetString("request_id"))
 	if err != nil {
 		response.Error(c, err)
 		return
@@ -101,7 +105,7 @@ func (h *Handler) Delete(c *gin.Context) {
 		response.Error(c, err)
 		return
 	}
-	if err = h.service.Delete(c, c.MustGet("user_id").(uuid.UUID), id, c.GetString("request_id")); err != nil {
+	if err = h.service.Delete(c.Request.Context(), c.MustGet("user_id").(uuid.UUID), id, c.GetString("request_id")); err != nil {
 		response.Error(c, err)
 		return
 	}

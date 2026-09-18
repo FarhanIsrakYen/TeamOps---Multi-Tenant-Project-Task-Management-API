@@ -22,7 +22,8 @@ export interface Project {
   version: number;
   updatedAt: string;
 }
-export type TaskStatus = "TODO" | "IN_PROGRESS" | "DONE" | "CANCELLED";
+export type TaskStatus =
+  "TODO" | "IN_PROGRESS" | "IN_REVIEW" | "DONE" | "CANCELLED";
 export interface Task {
   id: string;
   projectId: string;

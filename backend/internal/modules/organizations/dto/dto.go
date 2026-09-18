@@ -18,7 +18,7 @@ type UpdateRequest struct {
 	Version int    `json:"version" binding:"required,min=1"`
 }
 type AddMemberRequest struct {
-	Email string `json:"email" binding:"required,email"`
+	Email string `json:"email" binding:"required,email,max=254"`
 	Role  string `json:"role" binding:"required,oneof=ADMIN MEMBER VIEWER"`
 }
 

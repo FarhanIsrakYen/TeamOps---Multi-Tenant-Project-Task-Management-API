@@ -13,11 +13,11 @@ type RegisterRequest struct {
 	Password string `json:"password" binding:"required,min=12,max=72"`
 }
 type LoginRequest struct {
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required"`
+	Email    string `json:"email" binding:"required,email,max=254"`
+	Password string `json:"password" binding:"required,max=72"`
 }
 type RefreshRequest struct {
-	RefreshToken string `json:"refreshToken" binding:"required"`
+	RefreshToken string `json:"refreshToken" binding:"required,max=256"`
 }
 
 type TokenResponse struct {

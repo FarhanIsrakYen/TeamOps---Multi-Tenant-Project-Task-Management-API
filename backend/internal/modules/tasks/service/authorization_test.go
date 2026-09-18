@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	orgguard "github.com/example/teamops/backend/internal/modules/organizations/guard"
@@ -30,6 +31,7 @@ func (m taskMemberships) Role(_ context.Context, organizationID, userID uuid.UUI
 }
 
 type taskRepository struct {
+	mu        sync.Mutex
 	task      taskmodel.Task
 	deleted   bool
 	commented bool
@@ -41,6 +43,8 @@ func (r *taskRepository) Create(_ context.Context, task taskmodel.Task) (taskmod
 	return task, nil
 }
 func (r *taskRepository) Get(_ context.Context, id uuid.UUID) (taskmodel.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.task.ID != id {
 		return taskmodel.Task{}, pgx.ErrNoRows
 	}
@@ -50,7 +54,14 @@ func (r *taskRepository) List(context.Context, uuid.UUID, pagination.Params, tas
 	return nil, 0, nil
 }
 func (r *taskRepository) Update(_ context.Context, task taskmodel.Task) (taskmodel.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if task.Version != r.task.Version {
+		return taskmodel.Task{}, pgx.ErrNoRows
+	}
 	r.updated = true
+	task.Version++
+	r.task = task
 	return task, nil
 }
 func (r *taskRepository) Delete(context.Context, uuid.UUID) error {
@@ -94,8 +105,8 @@ func taskServiceForRole(role orgmodel.Role) (*Service, *taskRepository, uuid.UUI
 	userID := uuid.New()
 	taskID := uuid.New()
 	projectID := uuid.New()
-	repository := &taskRepository{task: taskmodel.Task{ID: taskID, OrganizationID: organizationID, ProjectID: projectID, Version: 1}}
-	organizations := orgguard.New(taskMemberships{roles: map[[2]uuid.UUID]orgmodel.Role{{organizationID, userID}: role}})
+	repository := &taskRepository{task: taskmodel.Task{ID: taskID, OrganizationID: organizationID, ProjectID: projectID, Title: "Task", Status: taskmodel.StatusTODO, Priority: taskmodel.PriorityMedium, Version: 1}}
+	organizations := orgguard.New(taskMemberships{roles: map[[2]uuid.UUID]orgmodel.Role{{organizationID, userID}: role}}, nil, 0)
 	projects := taskProjects{project: projectmodel.Project{ID: projectID, OrganizationID: organizationID}}
 	service := New(repository, repository, repository, projects, organizations, projectguard.New(organizations), taskguard.New(organizations), taskAuditor{})
 	return service, repository, userID, taskID
@@ -115,7 +126,8 @@ func TestAllRolesCanReadTasks(t *testing.T) {
 func TestMemberCanUpdateAndCommentButCannotDeleteTask(t *testing.T) {
 	t.Parallel()
 	service, repository, userID, taskID := taskServiceForRole(orgmodel.RoleMember)
-	_, err := service.Update(context.Background(), userID, taskID, taskmodel.Task{Version: 1}, "request")
+	title := "Updated task"
+	_, err := service.Update(context.Background(), userID, taskID, UpdateInput{Title: &title, Version: 1}, "request")
 	require.NoError(t, err)
 	require.True(t, repository.updated)
 	_, err = service.AddComment(context.Background(), userID, taskID, "comment", "request")
@@ -128,7 +140,7 @@ func TestMemberCanUpdateAndCommentButCannotDeleteTask(t *testing.T) {
 func TestViewerIsReadOnlyAndAdminCanDeleteTask(t *testing.T) {
 	t.Parallel()
 	viewerService, viewerRepository, viewerID, viewerTaskID := taskServiceForRole(orgmodel.RoleViewer)
-	_, err := viewerService.Update(context.Background(), viewerID, viewerTaskID, taskmodel.Task{Version: 1}, "request")
+	_, err := viewerService.Update(context.Background(), viewerID, viewerTaskID, UpdateInput{Version: 1}, "request")
 	require.ErrorIs(t, err, apperror.ErrForbidden)
 	_, err = viewerService.AddComment(context.Background(), viewerID, viewerTaskID, "comment", "request")
 	require.ErrorIs(t, err, apperror.ErrForbidden)

@@ -33,9 +33,7 @@ func main() {
 	}
 	cacheClient := cache.New(cfg.RedisAddr, cfg.RedisPassword)
 	if err = cacheClient.Ping(ctx); err != nil {
-		db.Close()
-		_ = cacheClient.Close()
-		log.Fatal().Err(err).Msg("redis startup failed")
+		log.Warn().Err(err).Msg("redis unavailable at startup; continuing without cache")
 	}
 
 	a := app.New(cfg, db, cacheClient, log)
@@ -58,10 +56,18 @@ func main() {
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Error().Err(err).Msg("graceful shutdown failed")
 	}
+	cancel()
+	auditShutdownCtx, cancelAudit := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	if err := a.AuditRecorder.Close(auditShutdownCtx); err != nil {
+		log.Error().Err(err).Uint64("dropped", a.AuditRecorder.Dropped()).Msg("audit queue shutdown incomplete")
+	}
+	if dropped := a.AuditRecorder.Dropped(); dropped > 0 {
+		log.Warn().Uint64("dropped", dropped).Msg("audit events were dropped during process lifetime")
+	}
+	cancelAudit()
 	db.Close()
 	if err := cacheClient.Close(); err != nil {
 		log.Error().Err(err).Msg("redis shutdown failed")

@@ -27,6 +27,15 @@ type fakeRepository struct {
 
 type fakeTransactor struct{ calls int }
 
+type recordingAuthAuditor struct {
+	actions []string
+}
+
+func (a *recordingAuthAuditor) Record(_ context.Context, _, _ uuid.UUID, action, _, _, _ string, _ map[string]any) error {
+	a.actions = append(a.actions, action)
+	return nil
+}
+
 func (t *fakeTransactor) WithinTransaction(ctx context.Context, fn func(context.Context) error) error {
 	t.calls++
 	return fn(ctx)
@@ -82,11 +91,12 @@ func (f *fakeRepository) RotateSession(_ context.Context, hash []byte, next auth
 	return *old, nil
 }
 
-func (f *fakeRepository) RevokeSession(_ context.Context, hash []byte) error {
+func (f *fakeRepository) RevokeSession(_ context.Context, hash []byte) (uuid.UUID, error) {
 	if session, ok := f.sessions[string(hash)]; ok {
 		f.revokeFamily(session.FamilyID)
+		return session.UserID, nil
 	}
-	return nil
+	return uuid.Nil, nil
 }
 
 func (f *fakeRepository) revokeFamily(familyID uuid.UUID) {
@@ -100,7 +110,7 @@ func (f *fakeRepository) revokeFamily(familyID uuid.UUID) {
 
 func newService(repo *fakeRepository) *Service {
 	tokens := sharedauth.NewTokenManager("this-is-a-long-enough-test-secret-value", "teamops-api", "teamops-web", time.Minute)
-	return New(repo, repo, &fakeTransactor{}, tokens, time.Hour, bcrypt.MinCost)
+	return New(repo, repo, &fakeTransactor{}, tokens, time.Hour, bcrypt.MinCost, nil)
 }
 
 func TestRegisterNormalizesEmailHashesPasswordAndCreatesSession(t *testing.T) {
@@ -206,4 +216,20 @@ func TestLogoutRevokesCurrentSessionFamily(t *testing.T) {
 	}
 	_, err = svc.Refresh(context.Background(), refreshed.RefreshToken, "", "")
 	require.Error(t, err)
+}
+
+func TestAuthenticationSuccessesEmitAuditEventsWithoutSecrets(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepository()
+	auditor := &recordingAuthAuditor{}
+	tokens := sharedauth.NewTokenManager("this-is-a-long-enough-test-secret-value", "teamops-api", "teamops-web", time.Minute)
+	service := New(repo, repo, &fakeTransactor{}, tokens, time.Hour, bcrypt.MinCost, auditor)
+
+	registered, err := service.Register(context.Background(), "person@example.com", "Person", strongPassword, "agent", "192.0.2.1")
+	require.NoError(t, err)
+	loggedIn, err := service.Login(context.Background(), "person@example.com", strongPassword, "agent", "192.0.2.1")
+	require.NoError(t, err)
+	require.NoError(t, service.Logout(context.Background(), loggedIn.RefreshToken))
+	require.NotEmpty(t, registered.RefreshToken)
+	require.Equal(t, []string{"user.registered", "auth.login", "auth.logout"}, auditor.actions)
 }

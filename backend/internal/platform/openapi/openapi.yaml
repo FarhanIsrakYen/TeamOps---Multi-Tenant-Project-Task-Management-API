@@ -59,13 +59,28 @@ paths:
     post:
       security: [{ bearerAuth: [] }]
       responses: { '201': { description: Member added or role updated } }
+  /organizations/{organizationId}/members/{userId}:
+    parameters:
+      - { $ref: '#/components/parameters/OrganizationId' }
+      - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+    delete:
+      security: [{ bearerAuth: [] }]
+      summary: Remove a non-owner organization member
+      responses: { '204': { description: Member removed }, '403': { description: Insufficient permissions }, '409': { description: Organization owner cannot be removed } }
   /organizations/{organizationId}/projects:
     parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
     get:
       security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { name: archived, in: query, schema: { type: boolean } }
+        - { name: search, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: sort, in: query, schema: { type: string, enum: [name, created_at, -created_at, updated_at, -updated_at], default: -created_at } }
       responses: { '200': { description: Project page } }
     post:
       security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectCreateRequest' } } } }
       responses: { '201': { description: Project created } }
   /organizations/{organizationId}/labels:
     parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
@@ -79,7 +94,18 @@ paths:
     parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
     get:
       security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Paginated audit log; owner or admin only } }
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { name: actor_id, in: query, schema: { type: string, format: uuid } }
+        - { name: action, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: resource_type, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: resource_id, in: query, schema: { type: string, maxLength: 255 } }
+        - { name: from, in: query, description: Inclusive RFC3339 lower bound, schema: { type: string, format: date-time } }
+        - { name: to, in: query, description: Inclusive RFC3339 upper bound, schema: { type: string, format: date-time } }
+      responses:
+        '200': { description: Paginated and filtered audit log; owner or admin only }
+        '403': { description: Insufficient permissions }
   /projects/{projectId}:
     parameters: [{ $ref: '#/components/parameters/ProjectId' }]
     get:
@@ -87,6 +113,7 @@ paths:
       responses: { '200': { description: Project } }
     patch:
       security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectUpdateRequest' } } } }
       responses: { '200': { description: Project updated }, '409': { $ref: '#/components/responses/Conflict' } }
     delete:
       security: [{ bearerAuth: [] }]
@@ -95,9 +122,18 @@ paths:
     parameters: [{ $ref: '#/components/parameters/ProjectId' }]
     get:
       security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/TaskStatus' } }
+        - { name: priority, in: query, schema: { $ref: '#/components/schemas/TaskPriority' } }
+        - { name: assignee_id, in: query, schema: { type: string, format: uuid } }
+        - { name: search, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: sort, in: query, schema: { type: string, enum: [created_at, -created_at, updated_at, -updated_at, due_at, -due_at, priority, -priority, title, -title], default: -created_at } }
       responses: { '200': { description: Filtered task page } }
     post:
       security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TaskCreateRequest' } } } }
       responses: { '201': { description: Task created } }
   /tasks/{taskId}:
     parameters: [{ $ref: '#/components/parameters/TaskId' }]
@@ -106,6 +142,8 @@ paths:
       responses: { '200': { description: Task } }
     patch:
       security: [{ bearerAuth: [] }]
+      summary: Partially update, assign, prioritize, schedule, or transition a task using its expected version
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TaskUpdateRequest' } } } }
       responses: { '200': { description: Task updated }, '409': { $ref: '#/components/responses/Conflict' } }
     delete:
       security: [{ bearerAuth: [] }]
@@ -128,7 +166,7 @@ components:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
   parameters:
     Page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
-    PageSize: { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+    PageSize: { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
     OrganizationId: { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
     ProjectId: { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
     TaskId: { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -143,3 +181,44 @@ components:
         email: { type: string, format: email }
         name: { type: string, minLength: 2 }
         password: { type: string, minLength: 12, maxLength: 72, format: password }
+    ProjectCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 120 }
+        description: { type: string, maxLength: 5000 }
+    ProjectUpdateRequest:
+      type: object
+      required: [version]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 120 }
+        description: { type: string, maxLength: 5000 }
+        archived: { type: boolean }
+        version: { type: integer, minimum: 1, description: Expected current version for optimistic locking. }
+    TaskStatus:
+      type: string
+      enum: [TODO, IN_PROGRESS, IN_REVIEW, DONE, CANCELLED]
+    TaskPriority:
+      type: string
+      enum: [LOW, MEDIUM, HIGH, URGENT]
+    TaskCreateRequest:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 2, maxLength: 200 }
+        description: { type: string, maxLength: 10000 }
+        assigneeId: { type: [string, 'null'], format: uuid }
+        status: { type: string, enum: [TODO], default: TODO }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        dueAt: { type: [string, 'null'], format: date-time }
+    TaskUpdateRequest:
+      type: object
+      required: [version]
+      properties:
+        title: { type: string, minLength: 2, maxLength: 200 }
+        description: { type: string, maxLength: 10000 }
+        assigneeId: { type: [string, 'null'], format: uuid, description: Use null to unassign. }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        dueAt: { type: [string, 'null'], format: date-time, description: Use null to clear the due date. }
+        version: { type: integer, minimum: 1, description: Expected current version for optimistic locking. }

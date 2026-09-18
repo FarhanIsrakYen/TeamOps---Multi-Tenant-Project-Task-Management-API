@@ -7,10 +7,19 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/example/teamops/backend/internal/database"
+	auditmodel "github.com/example/teamops/backend/internal/modules/audit/model"
+	auditrepo "github.com/example/teamops/backend/internal/modules/audit/repository"
 	orgrepo "github.com/example/teamops/backend/internal/modules/organizations/repository"
+	projectmodel "github.com/example/teamops/backend/internal/modules/projects/model"
+	projectrepo "github.com/example/teamops/backend/internal/modules/projects/repository"
+	taskmodel "github.com/example/teamops/backend/internal/modules/tasks/model"
+	taskrepo "github.com/example/teamops/backend/internal/modules/tasks/repository"
 	usersrepo "github.com/example/teamops/backend/internal/modules/users/repository"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	"github.com/jackc/pgx/v5"
@@ -28,11 +37,15 @@ func TestOrganizationCreationIsTransactionalAndTenantScoped(t *testing.T) {
 	defer pool.Close()
 	_, err = pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`, pgx.QueryExecModeSimpleProtocol)
 	require.NoError(t, err)
-	migrationPath := filepath.Join("..", "..", "migrations", "000001_initial.up.sql")
-	migration, err := os.ReadFile(migrationPath)
+	migrationPaths, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.up.sql"))
 	require.NoError(t, err)
-	_, err = pool.Exec(ctx, string(migration), pgx.QueryExecModeSimpleProtocol)
-	require.NoError(t, err)
+	sort.Strings(migrationPaths)
+	for _, migrationPath := range migrationPaths {
+		migration, readErr := os.ReadFile(migrationPath)
+		require.NoError(t, readErr)
+		_, err = pool.Exec(ctx, string(migration), pgx.QueryExecModeSimpleProtocol)
+		require.NoError(t, err, migrationPath)
+	}
 	users := usersrepo.New(pool)
 	orgs := orgrepo.New(pool)
 	tx := database.NewTransactor(pool)
@@ -61,4 +74,95 @@ func TestOrganizationCreationIsTransactionalAndTenantScoped(t *testing.T) {
 	require.EqualValues(t, 1, total)
 	require.Len(t, items, 1)
 	require.Equal(t, "OWNER", string(items[0].Role))
+
+	projects := projectrepo.New(pool)
+	project, err := projects.Create(ctx, created.ID, "Roadmap", "")
+	require.NoError(t, err)
+	projectErrors := runConcurrentUpdates(func(name string) error {
+		_, updateErr := projects.Update(ctx, project.ID, name, "", false, project.Version)
+		return updateErr
+	})
+	requireConcurrentOptimisticLock(t, projectErrors)
+	projectPage, projectTotal, err := projects.List(ctx, created.ID, pagination.Params{Page: 2, PageSize: 20, Offset: 20, SortBy: "created_at", Order: "desc"}, projectmodel.Filters{})
+	require.NoError(t, err)
+	require.Empty(t, projectPage)
+	require.EqualValues(t, 1, projectTotal)
+
+	tasks := taskrepo.New(pool)
+	task, err := tasks.Create(ctx, taskmodel.Task{OrganizationID: created.ID, ProjectID: project.ID, CreatedBy: user.ID, Title: "Ship feature", Status: taskmodel.StatusTODO, Priority: taskmodel.PriorityHigh})
+	require.NoError(t, err)
+	taskErrors := runConcurrentUpdates(func(title string) error {
+		candidate := task
+		candidate.Title = title
+		_, updateErr := tasks.Update(ctx, candidate)
+		return updateErr
+	})
+	requireConcurrentOptimisticLock(t, taskErrors)
+	taskPage, taskTotal, err := tasks.List(ctx, project.ID, pagination.Params{Page: 2, PageSize: 20, Offset: 20, SortBy: "created_at", Order: "desc"}, taskmodel.Filters{Status: taskmodel.StatusTODO, Priority: taskmodel.PriorityHigh})
+	require.NoError(t, err)
+	require.Empty(t, taskPage)
+	require.EqualValues(t, 1, taskTotal)
+
+	audits := auditrepo.New(pool)
+	organizationID, actorID := created.ID, user.ID
+	require.NoError(t, audits.Insert(ctx, auditmodel.Entry{
+		OrganizationID: &organizationID,
+		ActorUserID:    &actorID,
+		Action:         "task.status_changed",
+		ResourceType:   "task",
+		ResourceID:     task.ID.String(),
+		Metadata:       map[string]any{"oldStatus": "TODO", "newStatus": "IN_PROGRESS"},
+		RequestID:      "integration-request",
+		IPAddress:      "192.0.2.10",
+		UserAgent:      "integration-test",
+	}))
+	from := time.Now().Add(-time.Minute)
+	logs, auditTotal, err := audits.List(ctx, created.ID, pagination.Params{Page: 1, PageSize: 20}, auditmodel.Filters{
+		ActorUserID: &actorID, Action: "task.status_changed", ResourceType: "task", ResourceID: task.ID.String(), From: &from,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, auditTotal)
+	require.Len(t, logs, 1)
+	require.Equal(t, "192.0.2.10", logs[0].IPAddress)
+	require.Equal(t, "integration-test", logs[0].UserAgent)
+	require.Equal(t, "IN_PROGRESS", logs[0].Metadata["newStatus"])
+}
+
+func runConcurrentUpdates(update func(string) error) []error {
+	start := make(chan struct{})
+	errorsChannel := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, value := range []string{"concurrent-a", "concurrent-b"} {
+		value := value
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			errorsChannel <- update(value)
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errorsChannel)
+	out := make([]error, 0, 2)
+	for err := range errorsChannel {
+		out = append(out, err)
+	}
+	return out
+}
+
+func requireConcurrentOptimisticLock(t *testing.T, updateErrors []error) {
+	t.Helper()
+	var successes, conflicts int
+	for _, err := range updateErrors {
+		if err == nil {
+			successes++
+		} else if errors.Is(err, pgx.ErrNoRows) {
+			conflicts++
+		} else {
+			require.NoError(t, err)
+		}
+	}
+	require.Equal(t, 1, successes)
+	require.Equal(t, 1, conflicts)
 }

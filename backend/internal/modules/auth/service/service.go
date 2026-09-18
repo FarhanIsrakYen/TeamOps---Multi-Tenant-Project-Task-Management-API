@@ -28,7 +28,10 @@ type UserRepository interface {
 type SessionRepository interface {
 	CreateSession(context.Context, authmodel.Session, string, string) error
 	RotateSession(context.Context, []byte, authmodel.Session, string, string) (authmodel.Session, error)
-	RevokeSession(context.Context, []byte) error
+	RevokeSession(context.Context, []byte) (uuid.UUID, error)
+}
+type Auditor interface {
+	Record(context.Context, uuid.UUID, uuid.UUID, string, string, string, string, map[string]any) error
 }
 type Transactor interface {
 	WithinTransaction(context.Context, func(context.Context) error) error
@@ -46,10 +49,13 @@ type Service struct {
 	tokens     *sharedauth.TokenManager
 	refreshTTL time.Duration
 	hashCost   int
+	dummyHash  []byte
+	audit      Auditor
 }
 
-func New(users UserRepository, sessions SessionRepository, tx Transactor, tokens *sharedauth.TokenManager, refreshTTL time.Duration, hashCost int) *Service {
-	return &Service{users: users, sessions: sessions, tx: tx, tokens: tokens, refreshTTL: refreshTTL, hashCost: hashCost}
+func New(users UserRepository, sessions SessionRepository, tx Transactor, tokens *sharedauth.TokenManager, refreshTTL time.Duration, hashCost int, audit Auditor) *Service {
+	dummyHash, _ := bcrypt.GenerateFromPassword([]byte("TeamOps-Dummy-Password-1!"), hashCost)
+	return &Service{users: users, sessions: sessions, tx: tx, tokens: tokens, refreshTTL: refreshTTL, hashCost: hashCost, dummyHash: dummyHash, audit: audit}
 }
 func (s *Service) Register(ctx context.Context, email, name, password, agent, ip string) (Result, error) {
 	normalizedEmail, err := normalizeEmail(email)
@@ -83,6 +89,7 @@ func (s *Service) Register(ctx context.Context, email, name, password, agent, ip
 		}
 		return Result{}, fmt.Errorf("create account: %w", err)
 	}
+	_ = s.record(ctx, uuid.Nil, result.User.ID, "user.registered", "user", result.User.ID.String(), nil)
 	return result, nil
 }
 func (s *Service) Login(ctx context.Context, email, password, agent, ip string) (Result, error) {
@@ -91,15 +98,24 @@ func (s *Service) Login(ctx context.Context, email, password, agent, ip string) 
 		return Result{}, apperror.New(401, "invalid_credentials", "email or password is incorrect")
 	}
 	u, err := s.users.ByEmail(ctx, normalizedEmail)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
+		_ = bcrypt.CompareHashAndPassword(s.dummyHash, []byte(password))
+		return Result{}, apperror.New(401, "invalid_credentials", "email or password is incorrect")
+	}
+	if err == nil && bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
 		return Result{}, apperror.New(401, "invalid_credentials", "email or password is incorrect")
 	}
 	if err != nil {
 		return Result{}, fmt.Errorf("find user: %w", err)
 	}
-	return s.issue(ctx, u, uuid.New(), agent, ip)
+	result, err := s.issue(ctx, u, uuid.New(), agent, ip)
+	if err == nil {
+		_ = s.record(ctx, uuid.Nil, u.ID, "auth.login", "user", u.ID.String(), nil)
+	}
+	return result, err
 }
 func (s *Service) issue(ctx context.Context, u usermodel.User, family uuid.UUID, agent, ip string) (Result, error) {
+	agent, ip = sanitizeSessionMetadata(agent, ip)
 	access, exp, err := s.tokens.AccessToken(u.ID, u.Email)
 	if err != nil {
 		return Result{}, err
@@ -115,6 +131,7 @@ func (s *Service) issue(ctx context.Context, u usermodel.User, family uuid.UUID,
 	return Result{AccessToken: access, AccessTokenExpiresAt: exp, RefreshToken: raw, User: u}, nil
 }
 func (s *Service) Refresh(ctx context.Context, raw, agent, ip string) (Result, error) {
+	agent, ip = sanitizeSessionMetadata(agent, ip)
 	newRaw, newHash, err := sharedauth.NewRefreshToken()
 	if err != nil {
 		return Result{}, err
@@ -135,13 +152,37 @@ func (s *Service) Refresh(ctx context.Context, raw, agent, ip string) (Result, e
 	if err != nil {
 		return Result{}, err
 	}
+	_ = s.record(ctx, uuid.Nil, u.ID, "auth.token_refreshed", "user", u.ID.String(), nil)
 	return Result{AccessToken: access, AccessTokenExpiresAt: exp, RefreshToken: newRaw, User: u}, nil
 }
+
+func sanitizeSessionMetadata(agent, ip string) (string, string) {
+	agent = strings.TrimSpace(agent)
+	if len(agent) > 512 {
+		agent = agent[:512]
+	}
+	ip = strings.TrimSpace(ip)
+	if len(ip) > 64 {
+		ip = ""
+	}
+	return agent, ip
+}
 func (s *Service) Logout(ctx context.Context, raw string) error {
-	if err := s.sessions.RevokeSession(ctx, sharedauth.HashRefreshToken(raw)); err != nil {
+	userID, err := s.sessions.RevokeSession(ctx, sharedauth.HashRefreshToken(raw))
+	if err != nil {
 		return fmt.Errorf("revoke refresh session: %w", err)
 	}
+	if userID != uuid.Nil {
+		_ = s.record(ctx, uuid.Nil, userID, "auth.logout", "user", userID.String(), nil)
+	}
 	return nil
+}
+
+func (s *Service) record(ctx context.Context, orgID, actorID uuid.UUID, action, kind, resourceID string, metadata map[string]any) error {
+	if s.audit == nil {
+		return nil
+	}
+	return s.audit.Record(ctx, orgID, actorID, action, kind, resourceID, "", metadata)
 }
 
 func normalizeEmail(value string) (string, error) {

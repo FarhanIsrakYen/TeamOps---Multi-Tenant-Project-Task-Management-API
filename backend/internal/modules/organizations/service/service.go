@@ -5,7 +5,9 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/example/teamops/backend/internal/cache"
 	"github.com/example/teamops/backend/internal/database"
 	orgguard "github.com/example/teamops/backend/internal/modules/organizations/guard"
 	"github.com/example/teamops/backend/internal/modules/organizations/model"
@@ -20,17 +22,29 @@ import (
 type Auditor interface {
 	Record(context.Context, uuid.UUID, uuid.UUID, string, string, string, string, map[string]any) error
 }
+type Repository interface {
+	Create(context.Context, uuid.UUID, string, string) (model.Organization, error)
+	ListForUser(context.Context, uuid.UUID, pagination.Params) ([]model.Organization, int64, error)
+	Get(context.Context, uuid.UUID) (model.Organization, error)
+	Update(context.Context, uuid.UUID, string, string, int) (model.Organization, error)
+	Delete(context.Context, uuid.UUID) error
+	ListMembers(context.Context, uuid.UUID) ([]model.Membership, error)
+	AddMember(context.Context, uuid.UUID, string, model.Role) (model.Membership, *model.Role, error)
+	RemoveMember(context.Context, uuid.UUID, uuid.UUID) (model.Role, error)
+}
 type Service struct {
-	repo  *orgrepo.Repository
-	audit Auditor
-	tx    database.Transactor
-	guard *orgguard.Guard
+	repo     Repository
+	audit    Auditor
+	tx       database.Transactor
+	guard    *orgguard.Guard
+	cache    cache.Store
+	cacheTTL time.Duration
 }
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-func New(r *orgrepo.Repository, a Auditor, tx database.Transactor, guard *orgguard.Guard) *Service {
-	return &Service{repo: r, audit: a, tx: tx, guard: guard}
+func New(r Repository, a Auditor, tx database.Transactor, guard *orgguard.Guard, store cache.Store, cacheTTL time.Duration) *Service {
+	return &Service{repo: r, audit: a, tx: tx, guard: guard, cache: store, cacheTTL: cacheTTL}
 }
 func (s *Service) Create(ctx context.Context, userID uuid.UUID, name, slug, requestID string) (model.Organization, error) {
 	slug = strings.ToLower(strings.TrimSpace(slug))
@@ -41,10 +55,7 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, name, slug, requ
 	err := s.tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		var createErr error
 		o, createErr = s.repo.Create(txCtx, userID, strings.TrimSpace(name), slug)
-		if createErr != nil {
-			return createErr
-		}
-		return s.audit.Record(txCtx, o.ID, userID, "organization.created", "organization", o.ID.String(), requestID, nil)
+		return createErr
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -53,17 +64,40 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, name, slug, requ
 		}
 		return o, err
 	}
+	_ = s.audit.Record(ctx, o.ID, userID, "organization.created", "organization", o.ID.String(), requestID, nil)
 	return o, nil
 }
 func (s *Service) List(ctx context.Context, userID uuid.UUID, p pagination.Params) ([]model.Organization, int64, error) {
 	return s.repo.ListForUser(ctx, userID, p)
 }
 func (s *Service) Get(ctx context.Context, userID, id uuid.UUID) (model.Organization, error) {
-	o, err := s.repo.GetForUser(ctx, id, userID)
+	role, err := s.guard.RequireOrganizationMember(ctx, userID, id)
+	if errors.Is(err, apperror.ErrForbidden) {
+		return model.Organization{}, apperror.ErrNotFound
+	}
+	if err != nil {
+		return model.Organization{}, err
+	}
+	key := cache.OrganizationKey(id.String())
+	var o model.Organization
+	if s.cache != nil && s.cacheTTL > 0 {
+		if hit, cacheErr := s.cache.GetJSON(ctx, key, &o); cacheErr == nil && hit {
+			o.Role = role
+			return o, nil
+		}
+	}
+	o, err = s.repo.Get(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return o, apperror.ErrNotFound
 	}
-	return o, err
+	if err != nil {
+		return o, err
+	}
+	if s.cache != nil && s.cacheTTL > 0 {
+		_ = s.cache.SetJSON(ctx, key, o, s.cacheTTL)
+	}
+	o.Role = role
+	return o, nil
 }
 func (s *Service) Update(ctx context.Context, userID, id uuid.UUID, name, slug string, version int, requestID string) (model.Organization, error) {
 	if _, err := s.guard.RequireOrganizationPermission(ctx, userID, id, orgguard.ManageOrganization); err != nil {
@@ -82,15 +116,21 @@ func (s *Service) Update(ctx context.Context, userID, id uuid.UUID, name, slug s
 		return o, apperror.New(409, "organization_conflict", "organization slug is already in use")
 	}
 	if err == nil {
+		s.invalidateOrganization(ctx, id)
 		_ = s.audit.Record(ctx, id, userID, "organization.updated", "organization", id.String(), requestID, map[string]any{"version": o.Version})
 	}
 	return o, err
 }
-func (s *Service) Delete(ctx context.Context, userID, id uuid.UUID) error {
+func (s *Service) Delete(ctx context.Context, userID, id uuid.UUID, requestID string) error {
 	if _, err := s.guard.RequireOrganizationPermission(ctx, userID, id, orgguard.DeleteOrganization); err != nil {
 		return err
 	}
-	return s.repo.Delete(ctx, id)
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	s.invalidateOrganization(ctx, id)
+	_ = s.audit.Record(ctx, id, userID, "organization.deleted", "organization", id.String(), requestID, nil)
+	return nil
 }
 func (s *Service) Members(ctx context.Context, userID, orgID uuid.UUID) ([]model.Membership, error) {
 	if _, err := s.guard.RequireOrganizationPermission(ctx, userID, orgID, orgguard.ReadOrganization); err != nil {
@@ -108,7 +148,7 @@ func (s *Service) AddMember(ctx context.Context, userID, orgID uuid.UUID, email 
 	if role != model.RoleAdmin && role != model.RoleMember && role != model.RoleViewer {
 		return model.Membership{}, apperror.New(400, "invalid_role", "role must be ADMIN, MEMBER, or VIEWER")
 	}
-	m, err := s.repo.AddMember(ctx, orgID, email, role)
+	m, previousRole, err := s.repo.AddMember(ctx, orgID, email, role)
 	if errors.Is(err, orgrepo.ErrOwnerRoleImmutable) {
 		return m, apperror.New(409, "owner_role_immutable", "the organization owner's role cannot be changed")
 	}
@@ -116,7 +156,37 @@ func (s *Service) AddMember(ctx context.Context, userID, orgID uuid.UUID, email 
 		return m, apperror.New(404, "user_not_found", "no account exists for that email")
 	}
 	if err == nil {
-		_ = s.audit.Record(ctx, orgID, userID, "member.added", "membership", m.UserID.String(), requestID, map[string]any{"role": role})
+		s.guard.InvalidateMembership(ctx, orgID, m.UserID)
+		if previousRole == nil {
+			_ = s.audit.Record(ctx, orgID, userID, "member.added", "membership", m.UserID.String(), requestID, map[string]any{"role": role})
+		} else if *previousRole != role {
+			_ = s.audit.Record(ctx, orgID, userID, "member.role_changed", "membership", m.UserID.String(), requestID, map[string]any{"oldRole": *previousRole, "newRole": role})
+		}
 	}
 	return m, err
+}
+
+func (s *Service) RemoveMember(ctx context.Context, actorID, orgID, memberID uuid.UUID, requestID string) error {
+	if _, err := s.guard.RequireOrganizationPermission(ctx, actorID, orgID, orgguard.ManageMembers); err != nil {
+		return err
+	}
+	previousRole, err := s.repo.RemoveMember(ctx, orgID, memberID)
+	if errors.Is(err, orgrepo.ErrOwnerRoleImmutable) {
+		return apperror.New(409, "owner_role_immutable", "the organization owner cannot be removed")
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return apperror.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	s.guard.InvalidateMembership(ctx, orgID, memberID)
+	_ = s.audit.Record(ctx, orgID, actorID, "member.removed", "membership", memberID.String(), requestID, map[string]any{"previousRole": previousRole})
+	return nil
+}
+
+func (s *Service) invalidateOrganization(ctx context.Context, id uuid.UUID) {
+	if s.cache != nil {
+		_ = s.cache.Delete(ctx, cache.OrganizationKey(id.String()))
+	}
 }

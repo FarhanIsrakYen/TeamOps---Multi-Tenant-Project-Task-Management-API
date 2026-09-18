@@ -44,11 +44,23 @@ services:
       ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
       REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-168h}
       BCRYPT_COST: ${BCRYPT_COST:-12}
-      CORS_ORIGINS: http://localhost:5173
+      ORGANIZATION_CACHE_TTL: ${ORGANIZATION_CACHE_TTL:-5m}
+      PROJECT_CACHE_TTL: ${PROJECT_CACHE_TTL:-5m}
+      MEMBERSHIP_CACHE_TTL: ${MEMBERSHIP_CACHE_TTL:-30s}
+      RATE_LIMIT_PER_MIN: ${RATE_LIMIT_PER_MIN:-120}
+      AUTH_RATE_LIMIT_PER_MIN: ${AUTH_RATE_LIMIT_PER_MIN:-30}
+      LOGIN_RATE_LIMIT_PER_MIN: ${LOGIN_RATE_LIMIT_PER_MIN:-10}
+      LOGIN_FAILURE_LIMIT: ${LOGIN_FAILURE_LIMIT:-5}
+      LOGIN_FAILURE_WINDOW: ${LOGIN_FAILURE_WINDOW:-15m}
+      REQUEST_BODY_MAX_BYTES: ${REQUEST_BODY_MAX_BYTES:-1048576}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      AUDIT_QUEUE_SIZE: ${AUDIT_QUEUE_SIZE:-1024}
+      AUDIT_WORKERS: ${AUDIT_WORKERS:-2}
+      AUDIT_WRITE_TIMEOUT: ${AUDIT_WRITE_TIMEOUT:-3s}
     ports: ["8080:8080"]
     depends_on:
       migrate: { condition: service_completed_successfully }
-      redis: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s

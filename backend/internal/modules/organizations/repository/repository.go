@@ -39,8 +39,15 @@ func (r *Repository) Create(ctx context.Context, userID uuid.UUID, name, slug st
 }
 
 func (r *Repository) ListForUser(ctx context.Context, userID uuid.UUID, p pagination.Params) ([]model.Organization, int64, error) {
-	order := map[string]string{"name": "o.name", "createdAt": "o.created_at"}[p.SortBy]
-	q := fmt.Sprintf(`SELECT o.id,o.name,o.slug,o.created_by,o.version,m.role,o.created_at,o.updated_at,count(*) OVER() FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE m.user_id=$1 ORDER BY %s %s LIMIT $2 OFFSET $3`, order, p.Order)
+	order := map[string]string{"name": "o.name", "created_at": "o.created_at"}[p.SortBy]
+	if order == "" {
+		order = "o.created_at"
+	}
+	direction := "DESC"
+	if p.Order == "asc" {
+		direction = "ASC"
+	}
+	q := fmt.Sprintf(`SELECT o.id,o.name,o.slug,o.created_by,o.version,m.role,o.created_at,o.updated_at,count(*) OVER() FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE m.user_id=$1 ORDER BY %s %s LIMIT $2 OFFSET $3`, order, direction)
 	rows, err := database.Executor(ctx, r.db).Query(ctx, q, userID, p.PageSize, p.Offset)
 	if err != nil {
 		return nil, 0, err
@@ -61,6 +68,12 @@ func (r *Repository) ListForUser(ctx context.Context, userID uuid.UUID, p pagina
 func (r *Repository) GetForUser(ctx context.Context, id, userID uuid.UUID) (model.Organization, error) {
 	var o model.Organization
 	err := database.Executor(ctx, r.db).QueryRow(ctx, `SELECT o.id,o.name,o.slug,o.created_by,o.version,m.role,o.created_at,o.updated_at FROM organizations o JOIN organization_members m ON m.organization_id=o.id WHERE o.id=$1 AND m.user_id=$2`, id, userID).Scan(&o.ID, &o.Name, &o.Slug, &o.CreatedBy, &o.Version, &o.Role, &o.CreatedAt, &o.UpdatedAt)
+	return o, err
+}
+
+func (r *Repository) Get(ctx context.Context, id uuid.UUID) (model.Organization, error) {
+	var o model.Organization
+	err := database.Executor(ctx, r.db).QueryRow(ctx, `SELECT id,name,slug,created_by,version,created_at,updated_at FROM organizations WHERE id=$1`, id).Scan(&o.ID, &o.Name, &o.Slug, &o.CreatedBy, &o.Version, &o.CreatedAt, &o.UpdatedAt)
 	return o, err
 }
 
@@ -103,20 +116,41 @@ func (r *Repository) ListMembers(ctx context.Context, orgID uuid.UUID) ([]model.
 	return out, rows.Err()
 }
 
-func (r *Repository) AddMember(ctx context.Context, orgID uuid.UUID, email string, role model.Role) (model.Membership, error) {
+func (r *Repository) AddMember(ctx context.Context, orgID uuid.UUID, email string, role model.Role) (model.Membership, *model.Role, error) {
 	var m model.Membership
-	var currentRole model.Role
-	db := database.Executor(ctx, r.db)
-	err := db.QueryRow(ctx, `SELECT m.role FROM organization_members m JOIN users u ON u.id=m.user_id WHERE m.organization_id=$1 AND u.email=lower($2)`, orgID, email).Scan(&currentRole)
-	if err == nil && currentRole == model.RoleOwner {
-		return m, ErrOwnerRoleImmutable
-	}
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return m, err
-	}
-	err = db.QueryRow(ctx, `INSERT INTO organization_members(organization_id,user_id,role) SELECT $1,id,$3 FROM users WHERE email=lower($2) ON CONFLICT(organization_id,user_id) DO UPDATE SET role=EXCLUDED.role WHERE organization_members.role <> 'OWNER' RETURNING organization_id,user_id,role,created_at`, orgID, email, role).Scan(&m.OrganizationID, &m.UserID, &m.Role, &m.CreatedAt)
+	var previousRole *model.Role
+	err := r.tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+		db := database.Executor(txCtx, r.db)
+		var currentRole model.Role
+		lookupErr := db.QueryRow(txCtx, `SELECT m.role FROM organization_members m JOIN users u ON u.id=m.user_id WHERE m.organization_id=$1 AND u.email=lower($2) FOR UPDATE OF m`, orgID, email).Scan(&currentRole)
+		if lookupErr == nil && currentRole == model.RoleOwner {
+			return ErrOwnerRoleImmutable
+		}
+		if lookupErr == nil {
+			value := currentRole
+			previousRole = &value
+		}
+		if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+			return lookupErr
+		}
+		return db.QueryRow(txCtx, `INSERT INTO organization_members(organization_id,user_id,role) SELECT $1,id,$3 FROM users WHERE email=lower($2) ON CONFLICT(organization_id,user_id) DO UPDATE SET role=EXCLUDED.role WHERE organization_members.role <> 'OWNER' RETURNING organization_id,user_id,role,created_at`, orgID, email, role).Scan(&m.OrganizationID, &m.UserID, &m.Role, &m.CreatedAt)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return m, pgx.ErrNoRows
+		return m, previousRole, pgx.ErrNoRows
 	}
-	return m, err
+	return m, previousRole, err
+}
+
+func (r *Repository) RemoveMember(ctx context.Context, orgID, userID uuid.UUID) (model.Role, error) {
+	db := database.Executor(ctx, r.db)
+	var role model.Role
+	err := db.QueryRow(ctx, `DELETE FROM organization_members WHERE organization_id=$1 AND user_id=$2 AND role <> 'OWNER' RETURNING role`, orgID, userID).Scan(&role)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return role, err
+	}
+	err = db.QueryRow(ctx, `SELECT role FROM organization_members WHERE organization_id=$1 AND user_id=$2`, orgID, userID).Scan(&role)
+	if err == nil && role == model.RoleOwner {
+		return role, ErrOwnerRoleImmutable
+	}
+	return role, err
 }

@@ -403,7 +403,7 @@ a {
 }
 .board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(235px, 1fr));
+  grid-template-columns: repeat(5, minmax(235px, 1fr));
   gap: 1rem;
   overflow-x: auto;
   padding-bottom: 1rem;
@@ -511,6 +511,6 @@ a {
     align-items: flex-start;
   }
   .board {
-    grid-template-columns: repeat(4, 260px);
+    grid-template-columns: repeat(5, 260px);
   }
 }

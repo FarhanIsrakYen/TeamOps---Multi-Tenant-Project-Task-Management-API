@@ -32,7 +32,7 @@ func TestRequireTaskAccessUsesPersistedOrganization(t *testing.T) {
 	otherOrganizationID := uuid.New()
 	organizations := orgguard.New(memberships{roles: map[[2]uuid.UUID]orgmodel.Role{
 		{organizationID, userID}: orgmodel.RoleAdmin,
-	}})
+	}}, nil, 0)
 	guard := New(organizations)
 
 	require.NoError(t, guard.RequireTaskAccess(context.Background(), userID, taskmodel.Task{ID: uuid.New(), OrganizationID: organizationID}, orgguard.DeleteTasks))

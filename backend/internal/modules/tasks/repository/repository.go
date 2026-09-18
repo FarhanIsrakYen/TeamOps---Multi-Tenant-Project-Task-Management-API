@@ -53,10 +53,18 @@ func (r *Repository) List(ctx context.Context, projectID uuid.UUID, p pagination
 		position := len(args)
 		clauses = append(clauses, fmt.Sprintf("(title ILIKE $%d OR description ILIKE $%d)", position, position))
 	}
+	filterArgCount := len(args)
 	args = append(args, p.PageSize, p.Offset)
 	limitPos := len(args) - 1
-	sort := map[string]string{"createdAt": "created_at", "updatedAt": "updated_at", "dueAt": "due_date", "priority": "priority", "title": "title"}[p.SortBy]
-	q := fmt.Sprintf(`SELECT id,organization_id,project_id,assignee_id,created_by,title,description,status,priority,due_date,version,created_at,updated_at,count(*) OVER() FROM tasks WHERE %s ORDER BY %s %s NULLS LAST LIMIT $%d OFFSET $%d`, strings.Join(clauses, " AND "), sort, p.Order, limitPos, limitPos+1)
+	sort := map[string]string{"created_at": "created_at", "updated_at": "updated_at", "due_at": "due_date", "priority": "priority", "title": "title"}[p.SortBy]
+	if sort == "" {
+		sort = "created_at"
+	}
+	order := "DESC"
+	if p.Order == "asc" {
+		order = "ASC"
+	}
+	q := fmt.Sprintf(`SELECT id,organization_id,project_id,assignee_id,created_by,title,description,status,priority,due_date,version,created_at,updated_at,count(*) OVER() FROM tasks WHERE %s ORDER BY %s %s NULLS LAST,id %s LIMIT $%d OFFSET $%d`, strings.Join(clauses, " AND "), sort, order, order, limitPos, limitPos+1)
 	rows, err := database.Executor(ctx, r.db).Query(ctx, q, args...)
 	if err != nil {
 		return nil, 0, err
@@ -71,7 +79,16 @@ func (r *Repository) List(ctx context.Context, projectID uuid.UUID, p pagination
 		}
 		out = append(out, t)
 	}
-	return out, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if len(out) == 0 && p.Offset > 0 {
+		err = database.Executor(ctx, r.db).QueryRow(ctx, `SELECT count(*) FROM tasks WHERE `+strings.Join(clauses, " AND "), args[:filterArgCount]...).Scan(&total)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	return out, total, nil
 }
 
 func (r *Repository) Update(ctx context.Context, t model.Task) (model.Task, error) {
