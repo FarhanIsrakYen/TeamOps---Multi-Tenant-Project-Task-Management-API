@@ -45,15 +45,21 @@ func LoginAttemptKey(kind, identity string) string {
 // consumers; no package-level connection is used.
 type Cache struct{ client *redis.Client }
 
-func New(addr, password string) *Cache {
-	return &Cache{client: redis.NewClient(&redis.Options{
+func New(addr, password string, hooks ...redis.Hook) *Cache {
+	client := redis.NewClient(&redis.Options{
 		Addr:         addr,
 		Password:     password,
 		DialTimeout:  500 * time.Millisecond,
 		ReadTimeout:  500 * time.Millisecond,
 		WriteTimeout: 500 * time.Millisecond,
 		MaxRetries:   1,
-	})}
+	})
+	for _, hook := range hooks {
+		if hook != nil {
+			client.AddHook(hook)
+		}
+	}
+	return &Cache{client: client}
 }
 
 func (c *Cache) Ping(ctx context.Context) error { return c.client.Ping(ctx).Err() }

@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +12,41 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLoggingWritesStructuredRequestContextWithoutCredentials(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	log := zerolog.New(&output).With().Timestamp().Logger()
+	userID := uuid.New()
+	router := gin.New()
+	router.Use(RequestID(), Logging(log))
+	router.GET("/projects/:projectId", func(c *gin.Context) {
+		c.Set("user_id", userID)
+		c.Status(http.StatusAccepted)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/projects/project-1?access_token=do-not-log", nil)
+	request.Header.Set("Authorization", "Bearer do-not-log")
+	request.Header.Set("X-Request-ID", "request-123")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(output.Bytes(), &entry))
+	require.Equal(t, "info", entry["level"])
+	require.NotEmpty(t, entry["time"])
+	require.Equal(t, "request-123", entry["request_id"])
+	require.Equal(t, http.MethodGet, entry["method"])
+	require.Equal(t, "/projects/project-1", entry["path"])
+	require.Equal(t, float64(http.StatusAccepted), entry["status"])
+	require.Equal(t, userID.String(), entry["user_id"])
+	require.Contains(t, entry, "duration")
+	require.NotContains(t, output.String(), "do-not-log")
+}
 
 type fakeCounter struct {
 	values map[string]int64

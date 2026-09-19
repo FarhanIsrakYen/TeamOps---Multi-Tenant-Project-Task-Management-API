@@ -6,24 +6,24 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/example/teamops/backend/internal/cache"
+	"github.com/example/teamops/backend/internal/platform/observability"
 	sharedaudit "github.com/example/teamops/backend/internal/shared/audit"
 	"github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
-var requests = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "teamops_http_requests_total", Help: "Total HTTP requests."}, []string{"method", "route", "status"})
-var latency = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "teamops_http_request_duration_seconds", Help: "HTTP request latency."}, []string{"method", "route"})
-var metricsOnce sync.Once
-
-func RegisterMetrics() { metricsOnce.Do(func() { prometheus.MustRegister(requests, latency) }) }
+func RegisterMetrics() { observability.RegisterMetrics() }
 func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := strings.TrimSpace(c.GetHeader("X-Request-ID"))
@@ -108,14 +108,31 @@ func Logging(log zerolog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		log.Info().Str("request_id", c.GetString("request_id")).Str("method", c.Request.Method).Str("path", c.Request.URL.Path).Int("status", c.Writer.Status()).Dur("duration", time.Since(start)).Msg("request completed")
+		status := c.Writer.Status()
+		event := log.Info()
+		if status >= http.StatusInternalServerError {
+			event = log.Error()
+		} else if status >= http.StatusBadRequest {
+			event = log.Warn()
+		}
+		event = event.Str("request_id", c.GetString("request_id")).Str("method", c.Request.Method).Str("path", c.Request.URL.Path).Int("status", status).Dur("duration", time.Since(start))
+		if userID := requestUserID(c); userID != "" {
+			event = event.Str("user_id", userID)
+		}
+		event = withTraceContext(event, c)
+		event.Msg("request completed")
 	}
 }
 func Recovery(log zerolog.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if v := recover(); v != nil {
-				log.Error().Interface("panic", v).Bytes("stack", debug.Stack()).Msg("request panic")
+				event := log.Error().Str("request_id", c.GetString("request_id")).Str("method", c.Request.Method).Str("path", c.Request.URL.Path).Bytes("stack", debug.Stack())
+				if userID := requestUserID(c); userID != "" {
+					event = event.Str("user_id", userID)
+				}
+				event = withTraceContext(event, c)
+				event.Msg("request panic")
 				response.Error(c, fmt.Errorf("panic: %v", v))
 				c.Abort()
 			}
@@ -131,9 +148,62 @@ func Metrics() gin.HandlerFunc {
 		if route == "" {
 			route = "unmatched"
 		}
-		requests.WithLabelValues(c.Request.Method, route, fmt.Sprint(c.Writer.Status())).Inc()
-		latency.WithLabelValues(c.Request.Method, route).Observe(time.Since(start).Seconds())
+		observability.ObserveHTTPRequest(c.Request.Method, route, c.Writer.Status(), time.Since(start))
 	}
+}
+
+func Tracing() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		propagator := otel.GetTextMapPropagator()
+		ctx := propagator.Extract(c.Request.Context(), propagation.HeaderCarrier(c.Request.Header))
+		ctx, span := otel.Tracer("teamops/http").Start(ctx, "HTTP "+c.Request.Method,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(
+				attribute.String("http.request.method", c.Request.Method),
+				attribute.String("teamops.request_id", c.GetString("request_id")),
+			),
+		)
+		c.Request = c.Request.WithContext(ctx)
+		defer func() {
+			route := c.FullPath()
+			if route == "" {
+				route = "unmatched"
+			}
+			status := c.Writer.Status()
+			span.SetName(c.Request.Method + " " + route)
+			span.SetAttributes(attribute.String("http.route", route), attribute.Int("http.response.status_code", status))
+			if userID := requestUserID(c); userID != "" {
+				span.SetAttributes(attribute.String("user.id", userID))
+			}
+			if status >= http.StatusInternalServerError {
+				span.SetStatus(codes.Error, http.StatusText(status))
+			}
+			span.End()
+		}()
+		c.Next()
+	}
+}
+
+func requestUserID(c *gin.Context) string {
+	value, exists := c.Get("user_id")
+	if !exists || value == nil {
+		return ""
+	}
+	if stringer, ok := value.(fmt.Stringer); ok {
+		return stringer.String()
+	}
+	if value, ok := value.(string); ok {
+		return value
+	}
+	return ""
+}
+
+func withTraceContext(event *zerolog.Event, c *gin.Context) *zerolog.Event {
+	spanContext := trace.SpanContextFromContext(c.Request.Context())
+	if !spanContext.IsValid() {
+		return event
+	}
+	return event.Str("trace_id", spanContext.TraceID().String()).Str("span_id", spanContext.SpanID().String())
 }
 
 type Counter interface {
@@ -155,6 +225,7 @@ func RateLimit(counter Counter, scope string, limit int, window time.Duration) g
 		key := cache.RateLimitKey(scope, c.ClientIP(), bucket)
 		n, err := counter.Increment(c.Request.Context(), key, window)
 		if err == nil && n > int64(limit) {
+			observability.RateLimitEvent(scope, "limited")
 			retryAfter := windowSeconds - now.Unix()%windowSeconds
 			c.Header("Retry-After", fmt.Sprint(retryAfter))
 			c.Header("X-RateLimit-Limit", fmt.Sprint(limit))
@@ -162,6 +233,9 @@ func RateLimit(counter Counter, scope string, limit int, window time.Duration) g
 			response.Error(c, apperror.New(http.StatusTooManyRequests, "rate_limited", "too many requests"))
 			c.Abort()
 			return
+		}
+		if err != nil {
+			observability.RateLimitEvent(scope, "store_error")
 		}
 		if err == nil {
 			remaining := int64(limit) - n

@@ -92,7 +92,7 @@ func (r *Repository) List(ctx context.Context, projectID uuid.UUID, p pagination
 }
 
 func (r *Repository) Update(ctx context.Context, t model.Task) (model.Task, error) {
-	return scanTask(database.Executor(ctx, r.db).QueryRow(ctx, `UPDATE tasks SET assignee_id=$2,title=$3,description=$4,status=$5,priority=$6,due_date=$7,version=version+1,updated_at=now() WHERE id=$1 AND version=$8 RETURNING id,organization_id,project_id,assignee_id,created_by,title,description,status,priority,due_date,version,created_at,updated_at`, t.ID, t.AssigneeID, t.Title, t.Description, t.Status, t.Priority, t.DueAt, t.Version))
+	return scanTask(database.Executor(ctx, r.db).QueryRow(ctx, `UPDATE tasks SET assignee_id=$2,title=$3,description=$4,status=$5,priority=$6,due_date=$7,version=version+1,updated_at=now(),is_stale=false,stale_detected_at=NULL WHERE id=$1 AND version=$8 RETURNING id,organization_id,project_id,assignee_id,created_by,title,description,status,priority,due_date,version,created_at,updated_at`, t.ID, t.AssigneeID, t.Title, t.Description, t.Status, t.Priority, t.DueAt, t.Version))
 }
 func (r *Repository) Delete(ctx context.Context, id uuid.UUID) error {
 	tag, err := database.Executor(ctx, r.db).Exec(ctx, `DELETE FROM tasks WHERE id=$1`, id)

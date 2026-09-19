@@ -61,12 +61,15 @@ func (t *PGXTransactor) WithinTransaction(ctx context.Context, fn func(context.C
 	return nil
 }
 
-func Open(ctx context.Context, url string, maxConns int32) (*pgxpool.Pool, error) {
+func Open(ctx context.Context, url string, maxConns int32, tracers ...pgx.QueryTracer) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, fmt.Errorf("parse database config: %w", err)
 	}
 	cfg.MaxConns = maxConns
+	if len(tracers) > 0 {
+		cfg.ConnConfig.Tracer = tracers[0]
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)

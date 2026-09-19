@@ -2,14 +2,15 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unicode/utf8"
 
 	auditmodel "github.com/example/teamops/backend/internal/modules/audit/model"
+	"github.com/example/teamops/backend/internal/platform/jobs"
 	sharedaudit "github.com/example/teamops/backend/internal/shared/audit"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,37 +31,19 @@ type Writer interface {
 // waits for PostgreSQL: it copies an immutable event into a bounded queue or
 // drops it with an operational warning when the queue is saturated.
 type Recorder struct {
-	writer       Writer
-	log          zerolog.Logger
-	queue        chan auditmodel.Entry
-	writeTimeout time.Duration
-	wg           sync.WaitGroup
-	queueMu      sync.RWMutex
-	closed       bool
-	dropped      atomic.Uint64
+	writer    Writer
+	submitter jobs.Submitter
+	log       zerolog.Logger
+	dropped   atomic.Uint64
 }
 
-func NewRecorder(writer Writer, log zerolog.Logger, queueSize, workers int, writeTimeout time.Duration) *Recorder {
+func NewRecorder(writer Writer, submitter jobs.Submitter, log zerolog.Logger) *Recorder {
 	auditMetricsOnce.Do(func() { prometheus.MustRegister(auditDroppedTotal) })
-	if queueSize < 1 {
-		queueSize = 1
-	}
-	if workers < 1 {
-		workers = 1
-	}
-	if writeTimeout <= 0 {
-		writeTimeout = 3 * time.Second
-	}
-	r := &Recorder{writer: writer, log: log, queue: make(chan auditmodel.Entry, queueSize), writeTimeout: writeTimeout}
-	for range workers {
-		r.wg.Add(1)
-		go r.run()
-	}
-	return r
+	return &Recorder{writer: writer, submitter: submitter, log: log}
 }
 
 func (r *Recorder) Record(ctx context.Context, orgID, actorID uuid.UUID, action, resourceType, resourceID, requestID string, metadata map[string]any) error {
-	if r == nil || r.writer == nil {
+	if r == nil || r.writer == nil || r.submitter == nil {
 		return nil
 	}
 	request := sharedaudit.RequestInfoFromContext(ctx)
@@ -83,58 +66,23 @@ func (r *Recorder) Record(ctx context.Context, orgID, actorID uuid.UUID, action,
 		return nil
 	}
 
-	r.queueMu.RLock()
-	defer r.queueMu.RUnlock()
-	if r.closed {
-		r.drop("closed")
-		return nil
-	}
-	select {
-	case r.queue <- entry:
-	default:
-		r.drop("queue_full")
+	err := r.submitter.Submit(jobs.JobFunc{JobName: "audit_event_processing", Handler: func(jobCtx context.Context) error {
+		return r.writer.Insert(jobCtx, entry)
+	}})
+	if err != nil {
+		reason := "submit_failed"
+		if errors.Is(err, jobs.ErrQueueFull) {
+			reason = "queue_full"
+		} else if errors.Is(err, jobs.ErrClosed) {
+			reason = "closed"
+		}
+		r.drop(reason)
+		r.log.Warn().Err(err).Str("action", entry.Action).Msg("audit event was not queued")
 	}
 	return nil
 }
 
-func (r *Recorder) Close(ctx context.Context) error {
-	if r == nil {
-		return nil
-	}
-	r.queueMu.Lock()
-	if !r.closed {
-		r.closed = true
-		close(r.queue)
-	}
-	r.queueMu.Unlock()
-
-	done := make(chan struct{})
-	go func() {
-		r.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 func (r *Recorder) Dropped() uint64 { return r.dropped.Load() }
-
-func (r *Recorder) run() {
-	defer r.wg.Done()
-	for entry := range r.queue {
-		ctx, cancel := context.WithTimeout(context.Background(), r.writeTimeout)
-		err := r.writer.Insert(ctx, entry)
-		cancel()
-		if err != nil {
-			r.drop("write_failed")
-			r.log.Error().Err(err).Str("action", entry.Action).Msg("audit event persistence failed")
-		}
-	}
-}
 
 func (r *Recorder) drop(reason string) {
 	r.dropped.Add(1)

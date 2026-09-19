@@ -2,223 +2,624 @@ openapi: 3.1.0
 info:
   title: TeamOps API
   version: 1.0.0
-  description: Multi-tenant project and task management API.
+  description: |
+    REST API for multi-tenant project and task management.
+
+    Access tokens are short-lived JWT bearer tokens. Refresh tokens are opaque,
+    single-use credentials rotated by `/api/v1/auth/refresh`. Send JSON request
+    bodies with `Content-Type: application/json`; unknown properties and trailing
+    JSON values are rejected.
+
+    Authorization is enforced server-side. OWNER has complete tenant control;
+    ADMIN manages members, projects, tasks, labels, and audit logs but cannot
+    delete the organization; MEMBER reads the tenant and creates/updates tasks
+    and comments; VIEWER is read-only. Resource endpoints derive the organization
+    from persisted projects/tasks to prevent IDOR.
+
+    List endpoints use bounded offset pagination. `sort=-created_at` means
+    descending; a `+` prefix means ascending. The optional `order=asc|desc`
+    parameter is used when sort has no prefix. Project and task updates require
+    the current `version`; stale versions return HTTP 409.
+
+    Every `/api/v1` operation is subject to the configured IP rate limit and
+    can return HTTP 429. JSON-writing operations can also return HTTP 413 or
+    415, and unexpected server failures use the common error envelope with
+    HTTP 500.
 servers:
-  - url: http://localhost:8080/api/v1
+  - url: http://localhost:8080
+    description: Local Docker/API server
+tags:
+  - { name: Operations, description: 'Process health, readiness, metrics, and API contract' }
+  - { name: Authentication, description: Account and refresh-session lifecycle }
+  - { name: Users, description: Current authenticated user }
+  - { name: Organizations, description: Tenant lifecycle and membership }
+  - { name: Projects, description: Organization-owned projects }
+  - { name: Tasks, description: Project-owned work items }
+  - { name: Comments, description: Task discussion }
+  - { name: Labels, description: Organization labels and task assignments }
+  - { name: Audit, description: OWNER/ADMIN security and business event history }
 paths:
-  /auth/register:
-    post:
-      tags: [Authentication]
-      summary: Register an account
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RegisterRequest' } } } }
-      responses: { '201': { description: Account and token pair } }
-  /auth/login:
-    post:
-      tags: [Authentication]
-      summary: Authenticate
-      responses: { '200': { description: Token pair } }
-  /auth/refresh:
-    post:
-      tags: [Authentication]
-      summary: Rotate a refresh token
-      responses: { '200': { description: Rotated token pair }, '401': { $ref: '#/components/responses/Unauthorized' } }
-  /auth/logout:
-    post:
-      tags: [Authentication]
-      summary: Revoke a refresh session
-      responses: { '204': { description: Session revoked } }
-  /me:
+  /health:
     get:
-      security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Current user } }
-  /organizations:
-    get:
-      security: [{ bearerAuth: [] }]
-      parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/PageSize' }]
-      responses: { '200': { description: Organization page } }
-    post:
-      security: [{ bearerAuth: [] }]
-      responses: { '201': { description: Organization created } }
-  /organizations/{organizationId}:
-    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
-    get:
-      security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Organization visible to the member } }
-    patch:
-      security: [{ bearerAuth: [] }]
-      summary: Update with an optimistic-lock version
-      responses: { '200': { description: Organization updated }, '409': { $ref: '#/components/responses/Conflict' } }
-    delete:
-      security: [{ bearerAuth: [] }]
-      responses: { '204': { description: Organization deleted } }
-  /organizations/{organizationId}/members:
-    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
-    get:
-      security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Membership list } }
-    post:
-      security: [{ bearerAuth: [] }]
-      responses: { '201': { description: Member added or role updated } }
-  /organizations/{organizationId}/members/{userId}:
-    parameters:
-      - { $ref: '#/components/parameters/OrganizationId' }
-      - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
-    delete:
-      security: [{ bearerAuth: [] }]
-      summary: Remove a non-owner organization member
-      responses: { '204': { description: Member removed }, '403': { description: Insufficient permissions }, '409': { description: Organization owner cannot be removed } }
-  /organizations/{organizationId}/projects:
-    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
-    get:
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/Page' }
-        - { $ref: '#/components/parameters/PageSize' }
-        - { name: archived, in: query, schema: { type: boolean } }
-        - { name: search, in: query, schema: { type: string, maxLength: 200 } }
-        - { name: sort, in: query, schema: { type: string, enum: [name, created_at, -created_at, updated_at, -updated_at], default: -created_at } }
-      responses: { '200': { description: Project page } }
-    post:
-      security: [{ bearerAuth: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectCreateRequest' } } } }
-      responses: { '201': { description: Project created } }
-  /organizations/{organizationId}/labels:
-    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
-    get:
-      security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Organization labels } }
-    post:
-      security: [{ bearerAuth: [] }]
-      responses: { '201': { description: Label created } }
-  /organizations/{organizationId}/audit-logs:
-    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
-    get:
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/Page' }
-        - { $ref: '#/components/parameters/PageSize' }
-        - { name: actor_id, in: query, schema: { type: string, format: uuid } }
-        - { name: action, in: query, schema: { type: string, maxLength: 100 } }
-        - { name: resource_type, in: query, schema: { type: string, maxLength: 100 } }
-        - { name: resource_id, in: query, schema: { type: string, maxLength: 255 } }
-        - { name: from, in: query, description: Inclusive RFC3339 lower bound, schema: { type: string, format: date-time } }
-        - { name: to, in: query, description: Inclusive RFC3339 upper bound, schema: { type: string, format: date-time } }
+      tags: [Operations]
+      operationId: health
+      summary: Liveness probe
       responses:
-        '200': { description: Paginated and filtered audit log; owner or admin only }
-        '403': { description: Insufficient permissions }
-  /projects/{projectId}:
+        '200': { description: Process is alive, content: { application/json: { schema: { $ref: '#/components/schemas/HealthEnvelope' } } } }
+  /ready:
+    get:
+      tags: [Operations]
+      operationId: readiness
+      summary: Dependency readiness probe
+      description: PostgreSQL failure returns 503. Redis failure is reported as degraded with HTTP 200 because Redis is not a source of truth.
+      responses:
+        '200': { description: Ready or Redis-degraded, content: { application/json: { schema: { $ref: '#/components/schemas/ReadinessEnvelope' } } } }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /health/live:
+    get:
+      tags: [Operations]
+      operationId: legacyHealth
+      summary: Legacy liveness alias
+      deprecated: true
+      responses:
+        '200': { description: Process is alive, content: { application/json: { schema: { $ref: '#/components/schemas/HealthEnvelope' } } } }
+  /health/ready:
+    get:
+      tags: [Operations]
+      operationId: legacyReadiness
+      summary: Legacy readiness alias
+      description: Backwards-compatible alias for `/ready`.
+      deprecated: true
+      responses:
+        '200': { description: Ready or Redis-degraded, content: { application/json: { schema: { $ref: '#/components/schemas/ReadinessEnvelope' } } } }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /metrics:
+    get:
+      tags: [Operations]
+      operationId: prometheusMetrics
+      summary: Prometheus metrics
+      responses:
+        '200': { description: Prometheus text exposition, content: { text/plain: { schema: { type: string } } } }
+  /openapi.yaml:
+    get:
+      tags: [Operations]
+      operationId: openAPIDocument
+      summary: Raw OpenAPI contract
+      responses:
+        '200': { description: OpenAPI 3.1 YAML, content: { application/yaml: { schema: { type: string } } } }
+  /api/v1/auth/register:
+    post:
+      tags: [Authentication]
+      operationId: register
+      summary: Register a user and start a refresh session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+            example: { email: ada@example.com, name: Ada Lovelace, password: 'Strong-Password-123!' }
+      responses:
+        '201': { description: User and token pair created, content: { application/json: { schema: { $ref: '#/components/schemas/TokenEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Authenticate with email and password
+      description: Invalid email and invalid password deliberately return the same response to prevent user enumeration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+            example: { email: ada@example.com, password: 'Strong-Password-123!' }
+      responses:
+        '200': { description: Authenticated token pair, content: { application/json: { schema: { $ref: '#/components/schemas/TokenEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/auth/refresh:
+    post:
+      tags: [Authentication]
+      operationId: refresh
+      summary: Rotate a refresh token
+      description: The supplied token is revoked atomically. Reuse revokes every active token in its family.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+            example: { refreshToken: 'base64url-opaque-refresh-token' }
+      responses:
+        '200': { description: Rotated token pair, content: { application/json: { schema: { $ref: '#/components/schemas/TokenEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      summary: Revoke a refresh-token family
+      description: Idempotent for an unknown token; clients should discard both access and refresh tokens.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RefreshRequest' } } }
+      responses:
+        '204': { description: Session revoked }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/me:
+    get:
+      tags: [Users]
+      operationId: currentUser
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Authenticated user, content: { application/json: { schema: { $ref: '#/components/schemas/UserEnvelope' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/organizations:
+    get:
+      tags: [Organizations]
+      operationId: listOrganizations
+      summary: List organizations for the current user
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/PageSize' }, { $ref: '#/components/parameters/OrganizationSort' }, { $ref: '#/components/parameters/SortOrder' }]
+      responses:
+        '200': { description: Organization page, content: { application/json: { schema: { $ref: '#/components/schemas/OrganizationListEnvelope' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      tags: [Organizations]
+      operationId: createOrganization
+      summary: Create an organization; creator becomes OWNER
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrganizationCreateRequest' }
+            example: { name: Analytical Engines, slug: analytical-engines }
+      responses:
+        '201': { description: Organization created, content: { application/json: { schema: { $ref: '#/components/schemas/OrganizationEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/organizations/{organizationId}:
+    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
+    get:
+      tags: [Organizations]
+      operationId: getOrganization
+      summary: Read an organization as a member
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Organization, content: { application/json: { schema: { $ref: '#/components/schemas/OrganizationEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    patch:
+      tags: [Organizations]
+      operationId: updateOrganization
+      summary: Update organization settings (OWNER or ADMIN)
+      security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/OrganizationUpdateRequest' } } } }
+      responses:
+        '200': { description: Organization updated, content: { application/json: { schema: { $ref: '#/components/schemas/OrganizationEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    delete:
+      tags: [Organizations]
+      operationId: deleteOrganization
+      summary: Delete an organization (OWNER only)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Organization deleted }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/organizations/{organizationId}/members:
+    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
+    get:
+      tags: [Organizations]
+      operationId: listMembers
+      summary: List organization members
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Memberships, content: { application/json: { schema: { $ref: '#/components/schemas/MembershipListEnvelope' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      tags: [Organizations]
+      operationId: addOrUpdateMember
+      summary: Add a member or update a non-owner role (OWNER or ADMIN)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MemberUpsertRequest' }
+            example: { email: grace@example.com, role: MEMBER }
+      responses:
+        '201': { description: Membership created or updated, content: { application/json: { schema: { $ref: '#/components/schemas/MembershipEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/organizations/{organizationId}/members/{userId}:
+    parameters: [{ $ref: '#/components/parameters/OrganizationId' }, { $ref: '#/components/parameters/UserId' }]
+    delete:
+      tags: [Organizations]
+      operationId: removeMember
+      summary: Remove a non-owner member (OWNER or ADMIN)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Member removed }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/organizations/{organizationId}/projects:
+    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
+    get:
+      tags: [Projects]
+      operationId: listProjects
+      summary: List and filter projects as an organization member
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { name: archived, in: query, description: Exact archived-state filter, schema: { type: boolean } }
+        - { $ref: '#/components/parameters/Search' }
+        - { $ref: '#/components/parameters/ProjectSort' }
+        - { $ref: '#/components/parameters/SortOrder' }
+      responses:
+        '200': { description: Project page, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectListEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      tags: [Projects]
+      operationId: createProject
+      summary: Create a project (OWNER or ADMIN)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProjectCreateRequest' }
+            example: { name: Difference Engine, description: Delivery plan and milestones }
+      responses:
+        '201': { description: Project created, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/projects/{projectId}:
     parameters: [{ $ref: '#/components/parameters/ProjectId' }]
     get:
+      tags: [Projects]
+      operationId: getProject
+      summary: Read a project as a member of its persisted organization
       security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Project } }
+      responses:
+        '200': { description: Project, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     patch:
+      tags: [Projects]
+      operationId: updateProject
+      summary: Partially update a project (OWNER or ADMIN)
       security: [{ bearerAuth: [] }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectUpdateRequest' } } } }
-      responses: { '200': { description: Project updated }, '409': { $ref: '#/components/responses/Conflict' } }
+      responses:
+        '200': { description: Project updated, content: { application/json: { schema: { $ref: '#/components/schemas/ProjectEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     delete:
+      tags: [Projects]
+      operationId: deleteProject
+      summary: Delete a project (OWNER or ADMIN)
       security: [{ bearerAuth: [] }]
-      responses: { '204': { description: Project deleted } }
-  /projects/{projectId}/tasks:
+      responses:
+        '204': { description: Project deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/projects/{projectId}/tasks:
     parameters: [{ $ref: '#/components/parameters/ProjectId' }]
     get:
+      tags: [Tasks]
+      operationId: listTasks
+      summary: List, filter, search, and sort tasks
       security: [{ bearerAuth: [] }]
       parameters:
         - { $ref: '#/components/parameters/Page' }
         - { $ref: '#/components/parameters/PageSize' }
         - { name: status, in: query, schema: { $ref: '#/components/schemas/TaskStatus' } }
         - { name: priority, in: query, schema: { $ref: '#/components/schemas/TaskPriority' } }
-        - { name: assignee_id, in: query, schema: { type: string, format: uuid } }
-        - { name: search, in: query, schema: { type: string, maxLength: 200 } }
-        - { name: sort, in: query, schema: { type: string, enum: [created_at, -created_at, updated_at, -updated_at, due_at, -due_at, priority, -priority, title, -title], default: -created_at } }
-      responses: { '200': { description: Filtered task page } }
+        - { name: assignee_id, in: query, description: Exact assignee UUID; `assigneeId` is also accepted, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/Search' }
+        - { $ref: '#/components/parameters/TaskSort' }
+        - { $ref: '#/components/parameters/SortOrder' }
+      responses:
+        '200': { description: Task page, content: { application/json: { schema: { $ref: '#/components/schemas/TaskListEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     post:
+      tags: [Tasks]
+      operationId: createTask
+      summary: Create a TODO task (OWNER, ADMIN, or MEMBER)
       security: [{ bearerAuth: [] }]
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TaskCreateRequest' } } } }
-      responses: { '201': { description: Task created } }
-  /tasks/{taskId}:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskCreateRequest' }
+            example: { title: Draft algorithm notes, description: Prepare the first review, status: TODO, priority: HIGH, dueAt: '2026-10-15T12:00:00Z' }
+      responses:
+        '201': { description: Task created, content: { application/json: { schema: { $ref: '#/components/schemas/TaskEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/tasks/{taskId}:
     parameters: [{ $ref: '#/components/parameters/TaskId' }]
     get:
+      tags: [Tasks]
+      operationId: getTask
+      summary: Read a task as a member of its persisted organization
       security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Task } }
+      responses:
+        '200': { description: Task, content: { application/json: { schema: { $ref: '#/components/schemas/TaskEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     patch:
+      tags: [Tasks]
+      operationId: updateTask
+      summary: Update, assign, prioritize, schedule, or transition a task
+      description: OWNER, ADMIN, or MEMBER. At least one mutable field and the expected current version are required. Explicit null clears assignee/due date. Invalid state transitions return 409.
       security: [{ bearerAuth: [] }]
-      summary: Partially update, assign, prioritize, schedule, or transition a task using its expected version
-      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TaskUpdateRequest' } } } }
-      responses: { '200': { description: Task updated }, '409': { $ref: '#/components/responses/Conflict' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskUpdateRequest' }
+            example: { status: IN_PROGRESS, priority: URGENT, assigneeId: '11111111-1111-4111-8111-111111111111', dueAt: null, version: 3 }
+      responses:
+        '200': { description: Task updated and version incremented, content: { application/json: { schema: { $ref: '#/components/schemas/TaskEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     delete:
+      tags: [Tasks]
+      operationId: deleteTask
+      summary: Delete a task (OWNER or ADMIN)
       security: [{ bearerAuth: [] }]
-      responses: { '204': { description: Task deleted } }
-  /tasks/{taskId}/comments:
+      responses:
+        '204': { description: Task deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/tasks/{taskId}/comments:
     parameters: [{ $ref: '#/components/parameters/TaskId' }]
     get:
+      tags: [Comments]
+      operationId: listTaskComments
+      summary: List comments as an organization member
       security: [{ bearerAuth: [] }]
-      responses: { '200': { description: Task comments } }
+      responses:
+        '200': { description: Comments, content: { application/json: { schema: { $ref: '#/components/schemas/CommentListEnvelope' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     post:
+      tags: [Comments]
+      operationId: createTaskComment
+      summary: Comment on a task (OWNER, ADMIN, or MEMBER)
       security: [{ bearerAuth: [] }]
-      responses: { '201': { description: Comment created } }
-  /tasks/{taskId}/labels:
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CommentCreateRequest' } } } }
+      responses:
+        '201': { description: Comment created, content: { application/json: { schema: { $ref: '#/components/schemas/CommentEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/organizations/{organizationId}/labels:
+    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
+    get:
+      tags: [Labels]
+      operationId: listLabels
+      summary: List organization labels
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Labels, content: { application/json: { schema: { $ref: '#/components/schemas/LabelListEnvelope' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      tags: [Labels]
+      operationId: createLabel
+      summary: Create an organization label (OWNER or ADMIN)
+      security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/LabelCreateRequest' } } } }
+      responses:
+        '201': { description: Label created, content: { application/json: { schema: { $ref: '#/components/schemas/LabelEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/tasks/{taskId}/labels:
     parameters: [{ $ref: '#/components/parameters/TaskId' }]
     put:
+      tags: [Labels]
+      operationId: replaceTaskLabels
+      summary: Atomically replace task labels (OWNER, ADMIN, or MEMBER)
       security: [{ bearerAuth: [] }]
-      responses: { '204': { description: Task labels atomically replaced } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/SetLabelsRequest' } } } }
+      responses:
+        '204': { description: Labels replaced }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/BodyTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /api/v1/organizations/{organizationId}/audit-logs:
+    parameters: [{ $ref: '#/components/parameters/OrganizationId' }]
+    get:
+      tags: [Audit]
+      operationId: listAuditLogs
+      summary: Query audit history (OWNER or ADMIN)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { name: actor_id, in: query, description: 'Actor UUID; actorId, actor_user_id, and actorUserId aliases are accepted', schema: { type: string, format: uuid } }
+        - { name: action, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: resource_type, in: query, description: Exact resource type; resourceType is also accepted, schema: { type: string, maxLength: 100 } }
+        - { name: resource_id, in: query, description: Exact resource ID; resourceId and resource aliases are accepted, schema: { type: string, maxLength: 255 } }
+        - { name: from, in: query, description: Inclusive RFC3339 lower bound, schema: { type: string, format: date-time } }
+        - { name: to, in: query, description: Inclusive RFC3339 upper bound, schema: { type: string, format: date-time } }
+        - { name: sort, in: query, schema: { type: string, enum: [created_at, -created_at, createdAt, -createdAt], default: -created_at } }
+        - { $ref: '#/components/parameters/SortOrder' }
+      responses:
+        '200': { description: Audit log page ordered newest first by default, content: { application/json: { schema: { $ref: '#/components/schemas/AuditListEnvelope' } } } }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 components:
   securitySchemes:
-    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT, description: 'Short-lived access token returned by register, login, or refresh.' }
   parameters:
-    Page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
-    PageSize: { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+    Page: { name: page, in: query, description: 1-based page number; values below 1 become 1, schema: { type: integer, minimum: 1, maximum: 1000000, default: 1 } }
+    PageSize: { name: page_size, in: query, description: Items per page; pageSize is also accepted, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+    SortOrder: { name: order, in: query, description: Used when sort has no +/- prefix, schema: { type: string, enum: [asc, desc], default: desc } }
+    Search: { name: search, in: query, description: Case-insensitive title/name or description search, schema: { type: string, maxLength: 200 } }
+    OrganizationSort: { name: sort, in: query, schema: { type: string, enum: [name, -name, created_at, -created_at, createdAt, -createdAt], default: -created_at } }
+    ProjectSort: { name: sort, in: query, schema: { type: string, enum: [name, -name, created_at, -created_at, createdAt, -createdAt, updated_at, -updated_at, updatedAt, -updatedAt], default: -created_at } }
+    TaskSort: { name: sort, in: query, schema: { type: string, enum: [created_at, -created_at, createdAt, -createdAt, updated_at, -updated_at, updatedAt, -updatedAt, due_at, -due_at, dueAt, -dueAt, priority, -priority, title, -title], default: -created_at } }
     OrganizationId: { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
     ProjectId: { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
     TaskId: { name: taskId, in: path, required: true, schema: { type: string, format: uuid } }
+    UserId: { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
   responses:
-    Unauthorized: { description: Invalid or expired credentials }
-    Conflict: { description: Version or uniqueness conflict }
+    ValidationError: { description: 'Malformed JSON, unknown field, invalid identifier, invalid filter, or business validation failure', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' }, example: { error: { code: validation_error, message: request validation failed, requestId: 8c69acaf-fda2-42bd-95c2-59a7ed3153d4 } } } } }
+    Unauthorized: { description: 'Missing, malformed, expired, or invalid authentication credential', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' }, example: { error: { code: unauthorized, message: authentication required, requestId: 8c69acaf-fda2-42bd-95c2-59a7ed3153d4 } } } } }
+    InvalidCredentials: { description: Email or password is incorrect, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' }, example: { error: { code: invalid_credentials, message: email or password is incorrect, requestId: 8c69acaf-fda2-42bd-95c2-59a7ed3153d4 } } } } }
+    Forbidden: { description: Authenticated user lacks the required tenant role or resource access, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' }, example: { error: { code: forbidden, message: insufficient permissions, requestId: 8c69acaf-fda2-42bd-95c2-59a7ed3153d4 } } } } }
+    NotFound: { description: Resource does not exist or is intentionally concealed from a non-member, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+    Conflict: { description: 'Optimistic-lock version, uniqueness, immutable-owner, or state-transition conflict', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' }, example: { error: { code: version_conflict, message: resource was modified by another request, requestId: 8c69acaf-fda2-42bd-95c2-59a7ed3153d4 } } } } }
+    BodyTooLarge: { description: Request body exceeds configured limit, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+    UnsupportedMediaType: { description: JSON endpoint requires Content-Type application/json, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+    RateLimited: { description: IP-based or login abuse limit exceeded, headers: { Retry-After: { schema: { type: integer }, description: Seconds until the fixed window resets }, X-RateLimit-Limit: { schema: { type: integer } }, X-RateLimit-Remaining: { schema: { type: integer } } }, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
+    ServiceUnavailable: { description: PostgreSQL readiness check failed, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } } }
   schemas:
-    RegisterRequest:
-      type: object
-      required: [email, name, password]
-      properties:
-        email: { type: string, format: email }
-        name: { type: string, minLength: 2 }
-        password: { type: string, minLength: 12, maxLength: 72, format: password }
-    ProjectCreateRequest:
-      type: object
-      required: [name]
-      properties:
-        name: { type: string, minLength: 2, maxLength: 120 }
-        description: { type: string, maxLength: 5000 }
-    ProjectUpdateRequest:
-      type: object
-      required: [version]
-      properties:
-        name: { type: string, minLength: 2, maxLength: 120 }
-        description: { type: string, maxLength: 5000 }
-        archived: { type: boolean }
-        version: { type: integer, minimum: 1, description: Expected current version for optimistic locking. }
-    TaskStatus:
-      type: string
-      enum: [TODO, IN_PROGRESS, IN_REVIEW, DONE, CANCELLED]
-    TaskPriority:
-      type: string
-      enum: [LOW, MEDIUM, HIGH, URGENT]
-    TaskCreateRequest:
-      type: object
-      required: [title]
-      properties:
-        title: { type: string, minLength: 2, maxLength: 200 }
-        description: { type: string, maxLength: 10000 }
-        assigneeId: { type: [string, 'null'], format: uuid }
-        status: { type: string, enum: [TODO], default: TODO }
-        priority: { $ref: '#/components/schemas/TaskPriority' }
-        dueAt: { type: [string, 'null'], format: date-time }
-    TaskUpdateRequest:
-      type: object
-      required: [version]
-      properties:
-        title: { type: string, minLength: 2, maxLength: 200 }
-        description: { type: string, maxLength: 10000 }
-        assigneeId: { type: [string, 'null'], format: uuid, description: Use null to unassign. }
-        status: { $ref: '#/components/schemas/TaskStatus' }
-        priority: { $ref: '#/components/schemas/TaskPriority' }
-        dueAt: { type: [string, 'null'], format: date-time, description: Use null to clear the due date. }
-        version: { type: integer, minimum: 1, description: Expected current version for optimistic locking. }
+    Error: { type: object, additionalProperties: false, required: [code, message], properties: { code: { type: string }, message: { type: string }, requestId: { type: string, maxLength: 128 } } }
+    ErrorEnvelope: { type: object, additionalProperties: false, required: [error], properties: { error: { $ref: '#/components/schemas/Error' } } }
+    PaginationMeta: { type: object, additionalProperties: false, required: [page, pageSize, total, totalPages], properties: { page: { type: integer, minimum: 1 }, pageSize: { type: integer, minimum: 1, maximum: 100 }, total: { type: integer, format: int64, minimum: 0 }, totalPages: { type: integer, minimum: 0 } } }
+    Role: { type: string, enum: [OWNER, ADMIN, MEMBER, VIEWER] }
+    TaskStatus: { type: string, enum: [TODO, IN_PROGRESS, IN_REVIEW, DONE, CANCELLED] }
+    TaskPriority: { type: string, enum: [LOW, MEDIUM, HIGH, URGENT] }
+    RegisterRequest: { type: object, additionalProperties: false, required: [email, name, password], properties: { email: { type: string, format: email, maxLength: 254 }, name: { type: string, minLength: 2, maxLength: 100 }, password: { type: string, format: password, minLength: 12, maxLength: 72, description: 'Must contain upper/lowercase letters, a number, and a symbol.' } } }
+    LoginRequest: { type: object, additionalProperties: false, required: [email, password], properties: { email: { type: string, format: email, maxLength: 254 }, password: { type: string, format: password, maxLength: 72 } } }
+    RefreshRequest: { type: object, additionalProperties: false, required: [refreshToken], properties: { refreshToken: { type: string, minLength: 1, maxLength: 256, writeOnly: true } } }
+    OrganizationCreateRequest: { type: object, additionalProperties: false, required: [name, slug], properties: { name: { type: string, minLength: 2, maxLength: 120 }, slug: { type: string, minLength: 2, maxLength: 80, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' } } }
+    OrganizationUpdateRequest: { type: object, additionalProperties: false, required: [name, slug, version], properties: { name: { type: string, minLength: 2, maxLength: 120 }, slug: { type: string, minLength: 2, maxLength: 80, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }, version: { type: integer, minimum: 1 } } }
+    MemberUpsertRequest: { type: object, additionalProperties: false, required: [email, role], properties: { email: { type: string, format: email, maxLength: 254 }, role: { type: string, enum: [ADMIN, MEMBER, VIEWER], description: OWNER cannot be assigned through this endpoint. } } }
+    ProjectCreateRequest: { type: object, additionalProperties: false, required: [name], properties: { name: { type: string, minLength: 2, maxLength: 120 }, description: { type: string, maxLength: 5000, default: '' } } }
+    ProjectUpdateRequest: { type: object, additionalProperties: false, minProperties: 2, required: [version], properties: { name: { type: string, minLength: 2, maxLength: 120 }, description: { type: string, maxLength: 5000 }, archived: { type: boolean }, version: { type: integer, minimum: 1, description: Expected current version. } } }
+    TaskCreateRequest: { type: object, additionalProperties: false, required: [title], properties: { title: { type: string, minLength: 2, maxLength: 200 }, description: { type: string, maxLength: 10000, default: '' }, assigneeId: { type: [string, 'null'], format: uuid }, status: { type: string, enum: [TODO], default: TODO }, priority: { allOf: [{ $ref: '#/components/schemas/TaskPriority' }], default: MEDIUM }, dueAt: { type: [string, 'null'], format: date-time } } }
+    TaskUpdateRequest: { type: object, additionalProperties: false, minProperties: 2, required: [version], properties: { title: { type: string, minLength: 2, maxLength: 200 }, description: { type: string, maxLength: 10000 }, assigneeId: { type: [string, 'null'], format: uuid, description: Null unassigns. }, status: { $ref: '#/components/schemas/TaskStatus' }, priority: { $ref: '#/components/schemas/TaskPriority' }, dueAt: { type: [string, 'null'], format: date-time, description: Null clears the due date. }, version: { type: integer, minimum: 1, description: Expected current version. } } }
+    CommentCreateRequest: { type: object, additionalProperties: false, required: [body], properties: { body: { type: string, minLength: 1, maxLength: 5000 } } }
+    LabelCreateRequest: { type: object, additionalProperties: false, required: [name, color], properties: { name: { type: string, minLength: 1, maxLength: 50 }, color: { type: string, pattern: '^#[0-9A-Fa-f]{6}$', example: '#7C3AED' } } }
+    SetLabelsRequest: { type: object, additionalProperties: false, required: [labelIds], properties: { labelIds: { type: array, maxItems: 20, uniqueItems: true, items: { type: string, format: uuid } } } }
+    User: { type: object, additionalProperties: false, required: [id, email, name, createdAt, updatedAt], properties: { id: { type: string, format: uuid }, email: { type: string, format: email }, name: { type: string }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } } }
+    TokenResult: { type: object, additionalProperties: false, required: [accessToken, accessTokenExpiresAt, refreshToken, user], properties: { accessToken: { type: string, writeOnly: true }, accessTokenExpiresAt: { type: string, format: date-time }, refreshToken: { type: string, writeOnly: true }, user: { $ref: '#/components/schemas/User' } } }
+    Organization: { type: object, additionalProperties: false, required: [id, name, slug, createdBy, version, createdAt, updatedAt], properties: { id: { type: string, format: uuid }, name: { type: string }, slug: { type: string }, createdBy: { type: string, format: uuid }, version: { type: integer, minimum: 1 }, role: { $ref: '#/components/schemas/Role' }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } } }
+    Membership: { type: object, additionalProperties: false, required: [organizationId, userId, role, createdAt], properties: { organizationId: { type: string, format: uuid }, userId: { type: string, format: uuid }, role: { $ref: '#/components/schemas/Role' }, user: { $ref: '#/components/schemas/User' }, createdAt: { type: string, format: date-time } } }
+    Project: { type: object, additionalProperties: false, required: [id, organizationId, name, description, archived, version, createdAt, updatedAt], properties: { id: { type: string, format: uuid }, organizationId: { type: string, format: uuid }, name: { type: string }, description: { type: string }, archived: { type: boolean }, version: { type: integer, minimum: 1 }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } } }
+    Task: { type: object, additionalProperties: false, required: [id, organizationId, projectId, createdBy, title, description, status, priority, version, createdAt, updatedAt], properties: { id: { type: string, format: uuid }, organizationId: { type: string, format: uuid }, projectId: { type: string, format: uuid }, assigneeId: { type: string, format: uuid }, createdBy: { type: string, format: uuid }, title: { type: string }, description: { type: string }, status: { $ref: '#/components/schemas/TaskStatus' }, priority: { $ref: '#/components/schemas/TaskPriority' }, dueAt: { type: string, format: date-time }, version: { type: integer, minimum: 1 }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } } }
+    Comment: { type: object, additionalProperties: false, required: [id, taskId, authorId, body, createdAt, updatedAt], properties: { id: { type: string, format: uuid }, taskId: { type: string, format: uuid }, authorId: { type: string, format: uuid }, body: { type: string }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } } }
+    Label: { type: object, additionalProperties: false, required: [id, organizationId, name, color], properties: { id: { type: string, format: uuid }, organizationId: { type: string, format: uuid }, name: { type: string }, color: { type: string } } }
+    AuditLog: { type: object, additionalProperties: false, required: [id, action, resourceType, resourceId, metadata, requestId, createdAt], properties: { id: { type: integer, format: int64 }, organizationId: { type: string, format: uuid }, actorUserId: { type: string, format: uuid }, action: { type: string }, resourceType: { type: string }, resourceId: { type: string }, metadata: { type: object, additionalProperties: true }, requestId: { type: string }, ipAddress: { type: string }, userAgent: { type: string }, createdAt: { type: string, format: date-time } } }
+    HealthEnvelope: { type: object, required: [data], properties: { data: { type: object, required: [status], properties: { status: { type: string, const: ok } } } } }
+    ReadinessEnvelope: { type: object, required: [data], properties: { data: { type: object, required: [status, checks], properties: { status: { type: string, const: ready }, checks: { type: object, required: [database, redis], properties: { database: { type: string, const: ok }, redis: { type: string, enum: [ok, degraded] } } } } } } }
+    TokenEnvelope: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/TokenResult' } } }
+    UserEnvelope: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/User' } } }
+    OrganizationEnvelope: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Organization' } } }
+    OrganizationListEnvelope: { type: object, required: [data, meta], properties: { data: { type: array, items: { $ref: '#/components/schemas/Organization' } }, meta: { $ref: '#/components/schemas/PaginationMeta' } } }
+    MembershipEnvelope: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Membership' } } }
+    MembershipListEnvelope: { type: object, required: [data], properties: { data: { type: array, items: { $ref: '#/components/schemas/Membership' } } } }
+    ProjectEnvelope: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Project' } } }
+    ProjectListEnvelope: { type: object, required: [data, meta], properties: { data: { type: array, items: { $ref: '#/components/schemas/Project' } }, meta: { $ref: '#/components/schemas/PaginationMeta' } } }
+    TaskEnvelope: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Task' } } }
+    TaskListEnvelope: { type: object, required: [data, meta], properties: { data: { type: array, items: { $ref: '#/components/schemas/Task' } }, meta: { $ref: '#/components/schemas/PaginationMeta' } } }
+    CommentEnvelope: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Comment' } } }
+    CommentListEnvelope: { type: object, required: [data], properties: { data: { type: array, items: { $ref: '#/components/schemas/Comment' } } } }
+    LabelEnvelope: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Label' } } }
+    LabelListEnvelope: { type: object, required: [data], properties: { data: { type: array, items: { $ref: '#/components/schemas/Label' } } } }
+    AuditListEnvelope: { type: object, required: [data, meta], properties: { data: { type: array, items: { $ref: '#/components/schemas/AuditLog' } }, meta: { $ref: '#/components/schemas/PaginationMeta' } } }

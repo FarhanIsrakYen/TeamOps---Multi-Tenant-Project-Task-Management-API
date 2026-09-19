@@ -5,9 +5,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	auditmodel "github.com/example/teamops/backend/internal/modules/audit/model"
+	"github.com/example/teamops/backend/internal/platform/jobs"
 	sharedaudit "github.com/example/teamops/backend/internal/shared/audit"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -18,30 +18,30 @@ type recordingWriter struct {
 	mu      sync.Mutex
 	entries []auditmodel.Entry
 	err     error
-	started chan struct{}
-	release chan struct{}
 }
 
 func (w *recordingWriter) Insert(_ context.Context, entry auditmodel.Entry) error {
-	if w.started != nil {
-		select {
-		case w.started <- struct{}{}:
-		default:
-		}
-	}
-	if w.release != nil {
-		<-w.release
-	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.entries = append(w.entries, entry)
 	return w.err
 }
 
+type immediateSubmitter struct{}
+
+func (immediateSubmitter) Submit(job jobs.Job) error {
+	_ = job.Run(context.Background())
+	return nil
+}
+
+type rejectingSubmitter struct{ err error }
+
+func (s rejectingSubmitter) Submit(jobs.Job) error { return s.err }
+
 func TestRecorderCapturesRequestContextAndScrubsSecrets(t *testing.T) {
 	t.Parallel()
 	writer := &recordingWriter{}
-	recorder := NewRecorder(writer, zerolog.Nop(), 4, 1, time.Second)
+	recorder := NewRecorder(writer, immediateSubmitter{}, zerolog.Nop())
 	ctx := sharedaudit.ContextWithRequestInfo(context.Background(), sharedaudit.RequestInfo{
 		RequestID: "request-1", IPAddress: "192.0.2.25", UserAgent: "TeamOps test client",
 	})
@@ -49,7 +49,6 @@ func TestRecorderCapturesRequestContextAndScrubsSecrets(t *testing.T) {
 	require.NoError(t, recorder.Record(ctx, organizationID, actorID, "project.created", "project", "resource-1", "", map[string]any{
 		"name": "Safe", "accessToken": "must-not-be-stored", "nested": map[string]any{"password": "must-not-be-stored"},
 	}))
-	require.NoError(t, recorder.Close(context.Background()))
 
 	require.Len(t, writer.entries, 1)
 	entry := writer.entries[0]
@@ -63,29 +62,17 @@ func TestRecorderCapturesRequestContextAndScrubsSecrets(t *testing.T) {
 	require.Empty(t, entry.Metadata["nested"].(map[string]any))
 }
 
-func TestRecorderIsNonBlockingAndCountsDroppedEvents(t *testing.T) {
+func TestRecorderCountsQueueRejectionWithoutFailingBusinessCaller(t *testing.T) {
 	t.Parallel()
-	writer := &recordingWriter{started: make(chan struct{}, 1), release: make(chan struct{})}
-	recorder := NewRecorder(writer, zerolog.Nop(), 1, 1, time.Second)
-	ctx := context.Background()
-	require.NoError(t, recorder.Record(ctx, uuid.New(), uuid.New(), "first", "test", "1", "", nil))
-	select {
-	case <-writer.started:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not start")
-	}
-	require.NoError(t, recorder.Record(ctx, uuid.New(), uuid.New(), "second", "test", "2", "", nil))
-	require.NoError(t, recorder.Record(ctx, uuid.New(), uuid.New(), "third", "test", "3", "", nil))
+	recorder := NewRecorder(&recordingWriter{}, rejectingSubmitter{err: jobs.ErrQueueFull}, zerolog.Nop())
+	require.NoError(t, recorder.Record(context.Background(), uuid.New(), uuid.New(), "project.created", "project", "1", "", nil))
 	require.Equal(t, uint64(1), recorder.Dropped())
-	close(writer.release)
-	require.NoError(t, recorder.Close(context.Background()))
 }
 
 func TestRecorderPersistenceFailureDoesNotReachBusinessCaller(t *testing.T) {
 	t.Parallel()
 	writer := &recordingWriter{err: errors.New("database unavailable")}
-	recorder := NewRecorder(writer, zerolog.Nop(), 1, 1, time.Second)
+	recorder := NewRecorder(writer, immediateSubmitter{}, zerolog.Nop())
 	require.NoError(t, recorder.Record(context.Background(), uuid.Nil, uuid.New(), "auth.login", "user", uuid.NewString(), "", nil))
-	require.NoError(t, recorder.Close(context.Background()))
-	require.Equal(t, uint64(1), recorder.Dropped())
+	require.Len(t, writer.entries, 1)
 }

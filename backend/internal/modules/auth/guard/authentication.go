@@ -3,6 +3,7 @@ package guard
 import (
 	"strings"
 
+	"github.com/example/teamops/backend/internal/platform/observability"
 	sharedauth "github.com/example/teamops/backend/internal/shared/auth"
 	"github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/response"
@@ -13,12 +14,14 @@ func RequireAuthenticatedUser(tokens *sharedauth.TokenManager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		parts := strings.Fields(c.GetHeader("Authorization"))
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			observability.AuthenticationFailure("missing_bearer")
 			response.Error(c, apperror.ErrUnauthorized)
 			c.Abort()
 			return
 		}
 		claims, err := tokens.Parse(parts[1])
 		if err != nil {
+			observability.AuthenticationFailure("invalid_access_token")
 			response.Error(c, apperror.ErrUnauthorized)
 			c.Abort()
 			return

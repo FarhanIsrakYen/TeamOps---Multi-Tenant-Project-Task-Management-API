@@ -59,3 +59,16 @@ func TestAuditContextMigrationIsReversible(t *testing.T) {
 	require.Contains(t, string(down), "RENAME COLUMN actor_user_id TO actor_id")
 	require.Contains(t, string(down), "ON DELETE CASCADE")
 }
+
+func TestBackgroundJobStateMigrationIsReversible(t *testing.T) {
+	t.Parallel()
+	up, err := os.ReadFile("000004_background_job_state.up.sql")
+	require.NoError(t, err)
+	for _, fragment := range []string{"is_stale boolean", "tasks_stale_detection_idx", "task_count integer", "statistics_refreshed_at"} {
+		require.Contains(t, string(up), fragment)
+	}
+	down, err := os.ReadFile("000004_background_job_state.down.sql")
+	require.NoError(t, err)
+	require.Contains(t, string(down), "DROP INDEX tasks_stale_detection_idx")
+	require.Contains(t, string(down), "DROP COLUMN is_stale")
+}

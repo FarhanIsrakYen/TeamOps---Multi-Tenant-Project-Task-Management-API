@@ -13,7 +13,7 @@ import (
 	"github.com/example/teamops/backend/internal/cache"
 	"github.com/example/teamops/backend/internal/config"
 	"github.com/example/teamops/backend/internal/database"
-	"github.com/example/teamops/backend/internal/platform/jobs"
+	"github.com/example/teamops/backend/internal/platform/observability"
 	"github.com/example/teamops/backend/internal/shared/logger"
 )
 
@@ -26,19 +26,26 @@ func main() {
 	log := logger.New(cfg.Environment)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	traceShutdown, err := observability.SetupTracing(ctx, observability.TraceConfig{
+		Endpoint: cfg.OTelEndpoint, Insecure: cfg.OTelInsecure, ServiceName: cfg.OTelServiceName,
+		Environment: cfg.Environment, SampleRatio: cfg.OTelSampleRatio,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("tracing startup failed")
+	}
 
-	db, err := database.Open(ctx, cfg.DatabaseURL, cfg.DatabaseMaxConns)
+	db, err := database.Open(ctx, cfg.DatabaseURL, cfg.DatabaseMaxConns, observability.NewPGXTracer())
 	if err != nil {
 		log.Fatal().Err(err).Msg("database startup failed")
 	}
-	cacheClient := cache.New(cfg.RedisAddr, cfg.RedisPassword)
+	cacheClient := cache.New(cfg.RedisAddr, cfg.RedisPassword, observability.NewRedisHook())
 	if err = cacheClient.Ping(ctx); err != nil {
 		log.Warn().Err(err).Msg("redis unavailable at startup; continuing without cache")
 	}
 
 	a := app.New(cfg, db, cacheClient, log)
+	a.JobScheduler.Start(ctx)
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: a.Router, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
-	go jobs.RunSessionCleanup(ctx, a.AuthRepository, log)
 	serverErrors := make(chan error, 1)
 	go func() {
 		log.Info().Str("addr", cfg.HTTPAddr).Msg("server listening")
@@ -60,17 +67,23 @@ func main() {
 		log.Error().Err(err).Msg("graceful shutdown failed")
 	}
 	cancel()
-	auditShutdownCtx, cancelAudit := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	if err := a.AuditRecorder.Close(auditShutdownCtx); err != nil {
-		log.Error().Err(err).Uint64("dropped", a.AuditRecorder.Dropped()).Msg("audit queue shutdown incomplete")
+	a.JobScheduler.Stop()
+	jobShutdownCtx, cancelJobs := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	if err := a.JobPool.Shutdown(jobShutdownCtx); err != nil {
+		log.Error().Err(err).Uint64("audit_events_dropped", a.AuditRecorder.Dropped()).Msg("background job shutdown incomplete")
 	}
 	if dropped := a.AuditRecorder.Dropped(); dropped > 0 {
 		log.Warn().Uint64("dropped", dropped).Msg("audit events were dropped during process lifetime")
 	}
-	cancelAudit()
+	cancelJobs()
 	db.Close()
 	if err := cacheClient.Close(); err != nil {
 		log.Error().Err(err).Msg("redis shutdown failed")
 	}
+	traceShutdownCtx, cancelTracing := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	if err := traceShutdown(traceShutdownCtx); err != nil {
+		log.Error().Err(err).Msg("tracing shutdown failed")
+	}
+	cancelTracing()
 	log.Info().Msg("server stopped")
 }

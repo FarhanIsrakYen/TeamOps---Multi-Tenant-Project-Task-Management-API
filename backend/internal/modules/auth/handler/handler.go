@@ -6,6 +6,7 @@ import (
 	"github.com/example/teamops/backend/internal/modules/auth/dto"
 	authguard "github.com/example/teamops/backend/internal/modules/auth/guard"
 	authsvc "github.com/example/teamops/backend/internal/modules/auth/service"
+	"github.com/example/teamops/backend/internal/platform/observability"
 	"github.com/example/teamops/backend/internal/shared/errors"
 	sharedrequest "github.com/example/teamops/backend/internal/shared/request"
 	"github.com/example/teamops/backend/internal/shared/response"
@@ -41,6 +42,7 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 	ip := c.ClientIP()
 	if err := h.loginProtector.Check(c.Request.Context(), ip, req.Email); err != nil {
+		observability.AuthenticationFailure("login_blocked")
 		response.Error(c, err)
 		return
 	}
@@ -48,6 +50,8 @@ func (h *Handler) Login(c *gin.Context) {
 	if err != nil {
 		if ae := apperror.As(err); ae.Code != "invalid_credentials" {
 			h.loginProtector.Reset(c.Request.Context(), ip, req.Email)
+		} else {
+			observability.AuthenticationFailure("invalid_credentials")
 		}
 		response.Error(c, err)
 		return
@@ -63,6 +67,9 @@ func (h *Handler) Refresh(c *gin.Context) {
 	}
 	out, err := h.service.Refresh(c.Request.Context(), req.RefreshToken, c.Request.UserAgent(), c.ClientIP())
 	if err != nil {
+		if apperror.As(err).Code == "invalid_refresh_token" {
+			observability.AuthenticationFailure("invalid_refresh_token")
+		}
 		response.Error(c, err)
 		return
 	}

@@ -31,6 +31,7 @@ import (
 	usershandler "github.com/example/teamops/backend/internal/modules/users/handler"
 	usersrepo "github.com/example/teamops/backend/internal/modules/users/repository"
 	userssvc "github.com/example/teamops/backend/internal/modules/users/service"
+	"github.com/example/teamops/backend/internal/platform/jobs"
 	"github.com/example/teamops/backend/internal/platform/openapi"
 	sharedauth "github.com/example/teamops/backend/internal/shared/auth"
 	"github.com/example/teamops/backend/internal/shared/errors"
@@ -45,6 +46,8 @@ type App struct {
 	Router         *gin.Engine
 	AuthRepository *authrepo.Repository
 	AuditRecorder  *auditsvc.Recorder
+	JobPool        *jobs.Pool
+	JobScheduler   *jobs.Scheduler
 }
 
 func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zerolog.Logger) *App {
@@ -57,10 +60,11 @@ func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zero
 	middleware.RegisterMetrics()
 	r.Use(
 		middleware.RequestID(),
-		middleware.Recovery(log),
-		middleware.SecureHeaders(cfg.Environment == "production"),
+		middleware.Tracing(),
 		middleware.Logging(log),
 		middleware.Metrics(),
+		middleware.Recovery(log),
+		middleware.SecureHeaders(cfg.Environment == "production"),
 		middleware.CORS(cfg.CORSOrigins),
 		middleware.BodyLimit(cfg.RequestBodyMaxBytes),
 	)
@@ -87,9 +91,28 @@ func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zero
 	r.GET("/health/ready", readyHandler)
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	r.GET("/openapi.yaml", func(c *gin.Context) { c.Data(http.StatusOK, "application/yaml", openapi.Document) })
+	r.GET("/docs", func(c *gin.Context) { c.Redirect(http.StatusTemporaryRedirect, "/docs/") })
+	r.GET("/docs/", func(c *gin.Context) {
+		c.Header("Content-Security-Policy", "default-src 'none'; script-src https://cdn.jsdelivr.net; style-src https://cdn.jsdelivr.net 'unsafe-inline'; img-src data:; connect-src 'self'; font-src https://cdn.jsdelivr.net")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", openapi.SwaggerUI)
+	})
 	auditRepository := auditrepo.New(db)
-	auditRecorder := auditsvc.NewRecorder(auditRepository, log, cfg.AuditQueueSize, cfg.AuditWorkers, cfg.AuditWriteTimeout)
+	jobPool := jobs.NewPool(jobs.Config{
+		Workers: cfg.JobWorkers, QueueSize: cfg.JobQueueSize, MaxRetries: cfg.JobMaxRetries,
+		InitialBackoff: cfg.JobInitialBackoff, MaxBackoff: cfg.JobMaxBackoff, JobTimeout: cfg.JobTimeout,
+	}, log)
+	auditRecorder := auditsvc.NewRecorder(auditRepository, jobPool, log)
 	authRepository := authrepo.New(db)
+	maintenanceRepository := jobs.NewRepository(db)
+	jobScheduler := jobs.NewScheduler(jobPool, log,
+		jobs.Schedule{Interval: cfg.SessionCleanupInterval, NewJob: func() jobs.Job { return jobs.SessionCleanupJob(authRepository, log) }},
+		jobs.Schedule{Interval: cfg.StaleTaskScanInterval, NewJob: func() jobs.Job {
+			return jobs.StaleTaskDetectionJob(maintenanceRepository, cfg.StaleTaskAfter, time.Now, log)
+		}},
+		jobs.Schedule{Interval: cfg.ProjectStatisticsRefreshInterval, NewJob: func() jobs.Job {
+			return jobs.ProjectStatisticsRefreshJob(maintenanceRepository, log)
+		}},
+	)
 	usersRepository := usersrepo.New(db)
 	orgRepository := orgrepo.New(db)
 	projectRepository := projectrepo.New(db)
@@ -152,5 +175,5 @@ func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zero
 	r.NoMethod(func(c *gin.Context) {
 		response.Error(c, apperror.New(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed"))
 	})
-	return &App{Router: r, AuthRepository: authRepository, AuditRecorder: auditRecorder}
+	return &App{Router: r, AuthRepository: authRepository, AuditRecorder: auditRecorder, JobPool: jobPool, JobScheduler: jobScheduler}
 }

@@ -5,9 +5,6 @@ package integration
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -27,30 +24,13 @@ import (
 )
 
 func TestOrganizationCreationIsTransactionalAndTenantScoped(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL is not set")
-	}
 	ctx := context.Background()
-	pool, err := database.Open(ctx, url, 5)
-	require.NoError(t, err)
-	defer pool.Close()
-	_, err = pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`, pgx.QueryExecModeSimpleProtocol)
-	require.NoError(t, err)
-	migrationPaths, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*.up.sql"))
-	require.NoError(t, err)
-	sort.Strings(migrationPaths)
-	for _, migrationPath := range migrationPaths {
-		migration, readErr := os.ReadFile(migrationPath)
-		require.NoError(t, readErr)
-		_, err = pool.Exec(ctx, string(migration), pgx.QueryExecModeSimpleProtocol)
-		require.NoError(t, err, migrationPath)
-	}
+	pool := resetPostgres(t)
 	users := usersrepo.New(pool)
 	orgs := orgrepo.New(pool)
 	tx := database.NewTransactor(pool)
 	rollbackErr := errors.New("force rollback")
-	err = tx.WithinTransaction(ctx, func(txCtx context.Context) error {
+	err := tx.WithinTransaction(ctx, func(txCtx context.Context) error {
 		rolledBackUser, createErr := users.Create(txCtx, "rollback@example.com", "Rollback", "hash")
 		if createErr != nil {
 			return createErr

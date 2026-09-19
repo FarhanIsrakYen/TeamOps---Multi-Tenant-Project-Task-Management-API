@@ -40,7 +40,8 @@ Operational endpoints:
 - Liveness: `GET http://localhost:8080/health`
 - Readiness: `GET http://localhost:8080/ready`
 - Metrics: `GET http://localhost:8080/metrics`
-- OpenAPI: `GET http://localhost:8080/openapi.yaml`
+- Swagger UI: `GET http://localhost:8080/docs/`
+- OpenAPI contract: `GET http://localhost:8080/openapi.yaml`
 
 The migration container applies `backend/migrations` before the API starts. Compose health checks prevent dependent services from starting against unavailable infrastructure.
 
@@ -70,4 +71,4 @@ TEST_DATABASE_URL='postgres://teamops:teamops@localhost:5432/teamops_test?sslmod
 
 The integration test resets the `public` schema, so never point it at a database containing valuable data.
 
-See [architecture](docs/architecture.md), [feature modules and Go dependency injection](docs/modules.md), [database design](docs/database.md), [security](docs/security.md), and the embedded [OpenAPI document](backend/internal/platform/openapi/openapi.yaml).
+See [architecture](docs/architecture.md), [feature modules and Go dependency injection](docs/modules.md), [database design](docs/database.md), [background concurrency](docs/concurrency.md), [observability](docs/observability.md), [testing strategy](docs/testing.md), [security](docs/security.md), and the [API documentation guide](docs/api.md).
