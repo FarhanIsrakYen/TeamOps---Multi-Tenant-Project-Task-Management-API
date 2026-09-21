@@ -6,12 +6,14 @@ export function Layout() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <NavLink className="brand" to="/">
+        <NavLink className="brand" to="/dashboard">
           <span className="brand-mark">T</span>
           <span>TeamOps</span>
         </NavLink>
         <nav>
-          <NavLink to="/organizations">Workspace</NavLink>
+          <NavLink to="/dashboard">Dashboard</NavLink>
+          <NavLink to="/organizations">Organizations</NavLink>
+          <NavLink to="/profile">Profile</NavLink>
         </nav>
         <div className="account">
           <span className="avatar">

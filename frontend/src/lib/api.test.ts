@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import axios from "axios";
-import { apiMessage } from "./api";
+import { apiMessage, queryString, session } from "./api";
 
 describe("apiMessage", () => {
   it("uses the API error envelope message", () => {
@@ -24,5 +24,44 @@ describe("apiMessage", () => {
     expect(apiMessage(new Error("database details"))).toBe(
       "Something went wrong",
     );
+  });
+});
+
+describe("queryString", () => {
+  it("omits empty filters and encodes meaningful values", () => {
+    expect(
+      queryString({
+        page: 2,
+        search: "release plan",
+        status: "",
+        archived: false,
+      }),
+    ).toBe("?page=2&search=release+plan&archived=false");
+  });
+});
+
+describe("session", () => {
+  it("keeps credentials in memory and notifies subscribers", () => {
+    const stored = {
+      accessToken: "access",
+      accessTokenExpiresAt: "2099-01-01T00:00:00Z",
+      refreshToken: "refresh",
+      user: {
+        id: "user-id",
+        email: "person@example.com",
+        name: "Person",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    };
+    const values: Array<typeof stored | null> = [];
+    const unsubscribe = session.subscribe((value) => values.push(value));
+
+    session.set(stored);
+    session.clear();
+    unsubscribe();
+
+    expect(values).toEqual([stored, null]);
+    expect(session.get()).toBeNull();
   });
 });
