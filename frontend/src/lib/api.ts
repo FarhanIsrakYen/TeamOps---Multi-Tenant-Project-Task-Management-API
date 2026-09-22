@@ -2,7 +2,11 @@ import axios, { AxiosError, type InternalAxiosRequestConfig } from "axios";
 import type { ApiErrorBody, AuthTokens, Envelope } from "../types";
 
 const apiBaseURL =
-  import.meta.env.VITE_API_URL ?? "http://localhost:8080/api/v1";
+  (typeof window !== "undefined"
+    ? window.__TEAMOPS_CONFIG__?.apiBaseUrl
+    : undefined) ||
+  import.meta.env.VITE_API_URL ||
+  "http://localhost:8080/api/v1";
 
 type SessionListener = (value: AuthTokens | null) => void;
 let currentSession: AuthTokens | null = null;
