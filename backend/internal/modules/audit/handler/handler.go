@@ -7,7 +7,7 @@ import (
 	auditdto "github.com/example/teamops/backend/internal/modules/audit/dto"
 	auditmodel "github.com/example/teamops/backend/internal/modules/audit/model"
 	auditsvc "github.com/example/teamops/backend/internal/modules/audit/service"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
@@ -18,7 +18,11 @@ type Handler struct {
 	service *auditsvc.Service
 }
 
-func New(service *auditsvc.Service) *Handler { return &Handler{service: service} }
+func New(service *auditsvc.Service) *Handler {
+	return &Handler{
+		service: service,
+	}
+}
 func (h *Handler) List(c *gin.Context) {
 	oid, err := uuid.Parse(c.Param("organizationId"))
 	if err != nil {

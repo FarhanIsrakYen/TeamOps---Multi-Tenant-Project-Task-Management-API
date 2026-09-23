@@ -12,7 +12,7 @@ import (
 	orgguard "github.com/example/teamops/backend/internal/modules/organizations/guard"
 	orgmodel "github.com/example/teamops/backend/internal/modules/organizations/model"
 	"github.com/example/teamops/backend/internal/modules/projects/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -102,6 +102,9 @@ func (s *Service) Get(ctx context.Context, userID, id uuid.UUID) (model.Project,
 		}
 	}
 	if err := s.access.RequireProjectAccess(ctx, userID, p, orgguard.ReadOrganization); err != nil {
+		if errors.Is(err, apperror.ErrForbidden) {
+			return model.Project{}, apperror.ErrNotFound
+		}
 		return model.Project{}, err
 	}
 	return p, nil

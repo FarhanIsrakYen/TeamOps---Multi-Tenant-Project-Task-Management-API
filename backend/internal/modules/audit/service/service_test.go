@@ -8,7 +8,7 @@ import (
 	auditmodel "github.com/example/teamops/backend/internal/modules/audit/model"
 	orgguard "github.com/example/teamops/backend/internal/modules/organizations/guard"
 	orgmodel "github.com/example/teamops/backend/internal/modules/organizations/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"

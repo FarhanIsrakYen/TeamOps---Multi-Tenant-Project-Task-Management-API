@@ -12,7 +12,7 @@ import (
 	projectmodel "github.com/example/teamops/backend/internal/modules/projects/model"
 	taskguard "github.com/example/teamops/backend/internal/modules/tasks/guard"
 	taskmodel "github.com/example/teamops/backend/internal/modules/tasks/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -148,13 +148,18 @@ func TestCommentAndLabelValidationIsEnforcedInService(t *testing.T) {
 	err = memberService.SetLabels(context.Background(), memberID, taskID, []uuid.UUID{labelID, labelID}, "request")
 	require.ErrorAs(t, err, &appErr)
 	require.Equal(t, "duplicate_label", appErr.Code)
+
+	repository.setLabelsErr = taskmodel.ErrLabelNotInOrganization
+	err = memberService.SetLabels(context.Background(), memberID, taskID, []uuid.UUID{labelID}, "request")
+	require.ErrorAs(t, err, &appErr)
+	require.Equal(t, "invalid_label", appErr.Code)
 }
 
 func TestAssignmentAndStatusChangesEmitGranularAuditEvents(t *testing.T) {
 	t.Parallel()
 	organizationID, userID, taskID, projectID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	repository := &taskRepository{task: taskmodel.Task{ID: taskID, OrganizationID: organizationID, ProjectID: projectID, Title: "Task", Status: taskmodel.StatusTODO, Priority: taskmodel.PriorityMedium, Version: 1}}
-	organizations := orgguard.New(taskMemberships{roles: map[[2]uuid.UUID]orgmodel.Role{{organizationID, userID}: orgmodel.RoleMember}}, nil, 0)
+	organizations := orgguard.New(taskMemberships{roles: map[[2]uuid.UUID]orgmodel.Role{{organizationID, userID}: orgmodel.RoleMember}})
 	projects := taskProjects{project: projectmodel.Project{ID: projectID, OrganizationID: organizationID}}
 	auditor := &recordingTaskAuditor{}
 	service := New(repository, repository, repository, projects, organizations, projectguard.New(organizations), taskguard.New(organizations), auditor)

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -46,6 +47,24 @@ func TestLoggingWritesStructuredRequestContextWithoutCredentials(t *testing.T) {
 	require.Equal(t, userID.String(), entry["user_id"])
 	require.Contains(t, entry, "duration")
 	require.NotContains(t, output.String(), "do-not-log")
+}
+
+func TestLoggingRecordsInternalCauseWithoutExposingItToClient(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	log := zerolog.New(&output)
+	router := gin.New()
+	router.Use(RequestID(), Logging(log))
+	router.GET("/failure", func(c *gin.Context) {
+		response.Error(c, errors.New("database connection details"))
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/failure", nil))
+
+	require.Equal(t, http.StatusInternalServerError, recorder.Code)
+	require.NotContains(t, recorder.Body.String(), "database connection details")
+	require.Contains(t, output.String(), "database connection details")
 }
 
 type fakeCounter struct {

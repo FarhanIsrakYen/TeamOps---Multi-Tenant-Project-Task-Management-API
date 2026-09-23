@@ -10,7 +10,6 @@ func TestKeyConventions(t *testing.T) {
 	t.Parallel()
 	require.Equal(t, "teamops:v1:organization:org-id", OrganizationKey("org-id"))
 	require.Equal(t, "teamops:v1:project:project-id", ProjectKey("project-id"))
-	require.Equal(t, "teamops:v1:membership:org-id:user-id", MembershipKey("org-id", "user-id"))
 }
 
 func TestSecurityKeysHashClientIdentifiers(t *testing.T) {

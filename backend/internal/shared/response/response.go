@@ -3,7 +3,7 @@ package response
 import (
 	"net/http"
 
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -24,5 +24,8 @@ func Created(c *gin.Context, data any)    { c.JSON(http.StatusCreated, Envelope{
 func List(c *gin.Context, data, meta any) { c.JSON(http.StatusOK, Envelope{Data: data, Meta: meta}) }
 func Error(c *gin.Context, err error) {
 	ae := apperror.As(err)
+	if ae.Status >= http.StatusInternalServerError {
+		_ = c.Error(err)
+	}
 	c.JSON(ae.Status, Envelope{Error: &ErrorBody{Code: ae.Code, Message: ae.Message, RequestID: c.GetString("request_id")}})
 }

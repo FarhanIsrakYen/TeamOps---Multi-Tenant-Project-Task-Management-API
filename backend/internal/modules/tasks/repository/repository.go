@@ -149,14 +149,19 @@ func (r *Repository) SetLabels(ctx context.Context, taskID, orgID uuid.UUID, lab
 		if _, err := db.Exec(txCtx, `DELETE FROM task_label_assignments WHERE task_id=$1`, taskID); err != nil {
 			return err
 		}
-		for _, id := range labelIDs {
-			tag, err := db.Exec(txCtx, `INSERT INTO task_label_assignments(task_id,task_label_id,organization_id) SELECT $1,id,$3 FROM task_labels WHERE id=$2 AND organization_id=$3`, taskID, id, orgID)
-			if err != nil {
-				return err
-			}
-			if tag.RowsAffected() != 1 {
-				return fmt.Errorf("label %s not in organization", id)
-			}
+		if len(labelIDs) == 0 {
+			return nil
+		}
+		tag, err := db.Exec(txCtx, `
+			INSERT INTO task_label_assignments(task_id,task_label_id,organization_id)
+			SELECT $1,l.id,$3
+			FROM unnest($2::uuid[]) AS requested(id)
+			JOIN task_labels l ON l.id=requested.id AND l.organization_id=$3`, taskID, labelIDs, orgID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != int64(len(labelIDs)) {
+			return model.ErrLabelNotInOrganization
 		}
 		return nil
 	})

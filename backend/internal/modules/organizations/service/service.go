@@ -12,7 +12,7 @@ import (
 	orgguard "github.com/example/teamops/backend/internal/modules/organizations/guard"
 	"github.com/example/teamops/backend/internal/modules/organizations/model"
 	orgrepo "github.com/example/teamops/backend/internal/modules/organizations/repository"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -156,7 +156,6 @@ func (s *Service) AddMember(ctx context.Context, userID, orgID uuid.UUID, email 
 		return m, apperror.New(404, "user_not_found", "no account exists for that email")
 	}
 	if err == nil {
-		s.guard.InvalidateMembership(ctx, orgID, m.UserID)
 		if previousRole == nil {
 			_ = s.audit.Record(ctx, orgID, userID, "member.added", "membership", m.UserID.String(), requestID, map[string]any{"role": role})
 		} else if *previousRole != role {
@@ -180,7 +179,6 @@ func (s *Service) RemoveMember(ctx context.Context, actorID, orgID, memberID uui
 	if err != nil {
 		return err
 	}
-	s.guard.InvalidateMembership(ctx, orgID, memberID)
 	_ = s.audit.Record(ctx, orgID, actorID, "member.removed", "membership", memberID.String(), requestID, map[string]any{"previousRole": previousRole})
 	return nil
 }

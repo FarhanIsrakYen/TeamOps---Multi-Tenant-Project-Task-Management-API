@@ -59,7 +59,9 @@ func (r *Repository) RefreshProjectStatistics(ctx context.Context) (int64, error
 		    overdue_task_count=s.overdue_task_count,
 		    statistics_refreshed_at=now()
 		FROM statistics s
-		WHERE p.id=s.id`)
+		WHERE p.id=s.id
+		  AND (p.task_count, p.completed_task_count, p.overdue_task_count)
+		      IS DISTINCT FROM (s.task_count, s.completed_task_count, s.overdue_task_count)`)
 	if err != nil {
 		return 0, fmt.Errorf("refresh project statistics: %w", err)
 	}

@@ -7,7 +7,7 @@ import (
 	orgguard "github.com/example/teamops/backend/internal/modules/organizations/guard"
 	orgmodel "github.com/example/teamops/backend/internal/modules/organizations/model"
 	taskmodel "github.com/example/teamops/backend/internal/modules/tasks/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
@@ -32,7 +32,7 @@ func TestRequireTaskAccessUsesPersistedOrganization(t *testing.T) {
 	otherOrganizationID := uuid.New()
 	organizations := orgguard.New(memberships{roles: map[[2]uuid.UUID]orgmodel.Role{
 		{organizationID, userID}: orgmodel.RoleAdmin,
-	}}, nil, 0)
+	}})
 	guard := New(organizations)
 
 	require.NoError(t, guard.RequireTaskAccess(context.Background(), userID, taskmodel.Task{ID: uuid.New(), OrganizationID: organizationID}, orgguard.DeleteTasks))

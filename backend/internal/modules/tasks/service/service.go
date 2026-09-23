@@ -12,10 +12,11 @@ import (
 	orgmodel "github.com/example/teamops/backend/internal/modules/organizations/model"
 	projectmodel "github.com/example/teamops/backend/internal/modules/projects/model"
 	"github.com/example/teamops/backend/internal/modules/tasks/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type Auditor interface {
@@ -84,6 +85,9 @@ func (s *Service) authorizeProject(ctx context.Context, userID, projectID uuid.U
 		return p, err
 	}
 	err = s.projectAccess.RequireProjectAccess(ctx, userID, p, permission)
+	if permission == orgguard.ReadOrganization && errors.Is(err, apperror.ErrForbidden) {
+		return p, apperror.ErrNotFound
+	}
 	return p, err
 }
 func (s *Service) authorizeTask(ctx context.Context, userID, taskID uuid.UUID, permission orgguard.Permission) (model.Task, error) {
@@ -95,6 +99,9 @@ func (s *Service) authorizeTask(ctx context.Context, userID, taskID uuid.UUID, p
 		return t, err
 	}
 	err = s.taskAccess.RequireTaskAccess(ctx, userID, t, permission)
+	if permission == orgguard.ReadOrganization && errors.Is(err, apperror.ErrForbidden) {
+		return t, apperror.ErrNotFound
+	}
 	return t, err
 }
 func (s *Service) Create(ctx context.Context, userID, projectID uuid.UUID, t model.Task, requestID string) (model.Task, error) {
@@ -129,6 +136,9 @@ func (s *Service) Create(ctx context.Context, userID, projectID uuid.UUID, t mod
 		}
 	}
 	t, err = s.tasks.Create(ctx, t)
+	if isConstraint(err, "tasks_assignee_membership_fk") {
+		return t, apperror.New(400, "invalid_assignee", "assignee must be a current member of the organization")
+	}
 	if err == nil {
 		_ = s.audit.Record(ctx, p.OrganizationID, userID, "task.created", "task", t.ID.String(), requestID, nil)
 	}
@@ -206,6 +216,9 @@ func (s *Service) Update(ctx context.Context, userID, id uuid.UUID, input Update
 		}
 	}
 	updated, err := s.tasks.Update(ctx, updatedTask)
+	if isConstraint(err, "tasks_assignee_membership_fk") {
+		return updated, apperror.New(400, "invalid_assignee", "assignee must be a current member of the organization")
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return updated, apperror.New(409, "version_conflict", "task was modified by another request")
 	}
@@ -292,6 +305,9 @@ func (s *Service) CreateLabel(ctx context.Context, userID, orgID uuid.UUID, name
 		return model.Label{}, apperror.New(400, "invalid_label", "label name or color is invalid")
 	}
 	label, err := s.labels.CreateLabel(ctx, orgID, name, color)
+	if isConstraint(err, "task_labels_org_name_unique") {
+		return label, apperror.New(409, "label_name_conflict", "label name is already in use in this organization")
+	}
 	if err == nil {
 		_ = s.audit.Record(ctx, orgID, userID, "label.created", "label", label.ID.String(), requestID, nil)
 	}
@@ -316,8 +332,16 @@ func (s *Service) SetLabels(ctx context.Context, userID, taskID uuid.UUID, ids [
 		seen[id] = struct{}{}
 	}
 	if err = s.labels.SetLabels(ctx, taskID, t.OrganizationID, ids); err != nil {
+		if errors.Is(err, model.ErrLabelNotInOrganization) {
+			return apperror.New(400, "invalid_label", "every label must belong to the task organization")
+		}
 		return err
 	}
 	_ = s.audit.Record(ctx, t.OrganizationID, userID, "task.labels_updated", "task", taskID.String(), requestID, map[string]any{"labelCount": len(ids)})
 	return nil
+}
+
+func isConstraint(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.ConstraintName == constraint
 }

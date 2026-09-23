@@ -13,6 +13,13 @@ import (
 
 const keyPrefix = "teamops:v1"
 
+const incrementWithExpiryScript = `
+local value = redis.call('INCR', KEYS[1])
+if value == 1 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return value`
+
 type Store interface {
 	GetJSON(context.Context, string, any) (bool, error)
 	SetJSON(context.Context, string, any, time.Duration) error
@@ -25,10 +32,6 @@ func OrganizationKey(organizationID string) string {
 
 func ProjectKey(projectID string) string {
 	return keyPrefix + ":project:" + projectID
-}
-
-func MembershipKey(organizationID, userID string) string {
-	return keyPrefix + ":membership:" + organizationID + ":" + userID
 }
 
 func RateLimitKey(scope, identity string, bucket int64) string {
@@ -88,12 +91,13 @@ func (c *Cache) Delete(ctx context.Context, keys ...string) error {
 	return c.client.Del(ctx, keys...).Err()
 }
 func (c *Cache) Increment(ctx context.Context, key string, ttl time.Duration) (int64, error) {
-	n, err := c.client.Incr(ctx, key).Result()
-	if err != nil {
-		return 0, err
+	ttlMillis := ttl.Milliseconds()
+	if ttlMillis < 1 {
+		ttlMillis = 1
 	}
-	if n == 1 {
-		_ = c.client.Expire(ctx, key, ttl).Err()
+	n, err := c.client.Eval(ctx, incrementWithExpiryScript, []string{key}, ttlMillis).Int64()
+	if err != nil {
+		return 0, fmt.Errorf("increment expiring counter: %w", err)
 	}
 	return n, nil
 }

@@ -10,17 +10,38 @@ const apiBaseURL =
 
 type SessionListener = (value: AuthTokens | null) => void;
 let currentSession: AuthTokens | null = null;
+let sessionRevision = 0;
 const listeners = new Set<SessionListener>();
+
+interface SessionSnapshot {
+  revision: number;
+  value: AuthTokens | null;
+}
 
 export const session = {
   get: () => currentSession,
   set(value: AuthTokens) {
     currentSession = value;
+    sessionRevision += 1;
     listeners.forEach((listener) => listener(value));
   },
   clear() {
     currentSession = null;
+    sessionRevision += 1;
     listeners.forEach((listener) => listener(null));
+  },
+  snapshot(): SessionSnapshot {
+    return { revision: sessionRevision, value: currentSession };
+  },
+  replaceIfCurrent(snapshot: SessionSnapshot, value: AuthTokens): boolean {
+    if (snapshot.revision !== sessionRevision) return false;
+    session.set(value);
+    return true;
+  },
+  clearIfCurrent(snapshot: SessionSnapshot): boolean {
+    if (snapshot.revision !== sessionRevision) return false;
+    session.clear();
+    return true;
   },
   subscribe(listener: SessionListener) {
     listeners.add(listener);
@@ -35,18 +56,21 @@ const refreshClient = axios.create({ baseURL: apiBaseURL, timeout: 15_000 });
 let refreshInFlight: Promise<string> | null = null;
 
 async function refreshAccessToken(): Promise<string> {
-  const active = session.get();
+  const snapshot = session.snapshot();
+  const active = snapshot.value;
   if (!active) throw new Error("No active session");
   refreshInFlight ??= refreshClient
     .post<Envelope<AuthTokens>>("/auth/refresh", {
       refreshToken: active.refreshToken,
     })
     .then(({ data }) => {
-      session.set(data.data);
+      if (!session.replaceIfCurrent(snapshot, data.data)) {
+        throw new Error("Session changed while token refresh was in progress");
+      }
       return data.data.accessToken;
     })
     .catch((error: unknown) => {
-      session.clear();
+      session.clearIfCurrent(snapshot);
       throw error;
     })
     .finally(() => {

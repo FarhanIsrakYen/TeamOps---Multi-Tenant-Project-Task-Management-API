@@ -34,7 +34,7 @@ import (
 	"github.com/example/teamops/backend/internal/platform/jobs"
 	"github.com/example/teamops/backend/internal/platform/openapi"
 	sharedauth "github.com/example/teamops/backend/internal/shared/auth"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -120,7 +120,7 @@ func New(cfg config.Config, db *pgxpool.Pool, cacheClient *cache.Cache, log zero
 	tokens := sharedauth.NewTokenManager(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience, cfg.AccessTokenTTL)
 	authService := authsvc.New(usersRepository, authRepository, database.NewTransactor(db), tokens, cfg.RefreshTokenTTL, cfg.PasswordHashCost, auditRecorder)
 	loginProtector := authguard.NewLoginProtector(cacheClient, cfg.LoginFailureLimit, cfg.LoginFailureWindow)
-	organizationGuard := orgguard.New(orgRepository, cacheClient, cfg.MembershipCacheTTL)
+	organizationGuard := orgguard.New(orgRepository)
 	projectGuard := projectguard.New(organizationGuard)
 	taskGuard := taskguard.New(organizationGuard)
 	orgService := orgsvc.New(orgRepository, auditRecorder, database.NewTransactor(db), organizationGuard, cacheClient, cfg.OrganizationCacheTTL)

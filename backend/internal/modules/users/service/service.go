@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	usermodel "github.com/example/teamops/backend/internal/modules/users/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )

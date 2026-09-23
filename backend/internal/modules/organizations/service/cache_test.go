@@ -132,7 +132,7 @@ func TestOrganizationCacheAsideHitMissAndInvalidation(t *testing.T) {
 		ID: organizationID, Name: "TeamOps", Slug: "teamops", Version: 1,
 	}}
 	store := &organizationCacheStore{values: make(map[string][]byte)}
-	guard := orgguard.New(authorizationMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: orgmodel.RoleOwner}}, nil, 0)
+	guard := orgguard.New(authorizationMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: orgmodel.RoleOwner}})
 	service := New(repository, cacheAuditor{}, nil, guard, store, time.Minute)
 
 	for range 2 {
@@ -168,7 +168,7 @@ func TestOrganizationCacheFailureDoesNotFailReadsOrWrites(t *testing.T) {
 		values: make(map[string][]byte), getErr: errors.New("redis unavailable"),
 		setErr: errors.New("redis unavailable"), deleteErr: errors.New("redis unavailable"),
 	}
-	guard := orgguard.New(authorizationMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: orgmodel.RoleOwner}}, nil, 0)
+	guard := orgguard.New(authorizationMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: orgmodel.RoleOwner}})
 	service := New(repository, cacheAuditor{}, nil, guard, store, time.Minute)
 
 	organization, err := service.Get(context.Background(), userID, organizationID)
@@ -177,26 +177,6 @@ func TestOrganizationCacheFailureDoesNotFailReadsOrWrites(t *testing.T) {
 
 	_, err = service.Update(context.Background(), userID, organizationID, "Still available", "still-available", 1, "request")
 	require.NoError(t, err)
-}
-
-func TestAddMemberInvalidatesMembershipCache(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	organizationID, adminID, memberID := uuid.New(), uuid.New(), uuid.New()
-	store := &organizationCacheStore{values: make(map[string][]byte)}
-	reader := authorizationMemberships{roles: map[uuid.UUID]orgmodel.Role{adminID: orgmodel.RoleAdmin}}
-	guard := orgguard.New(reader, store, time.Minute)
-	repository := &cacheOrganizationRepository{membership: orgmodel.Membership{
-		OrganizationID: organizationID, UserID: memberID, Role: orgmodel.RoleViewer,
-	}}
-	service := New(repository, cacheAuditor{}, nil, guard, store, time.Minute)
-	key := cache.MembershipKey(organizationID.String(), memberID.String())
-	store.values[key] = []byte(`{"role":"MEMBER"}`)
-
-	_, err := service.AddMember(ctx, adminID, organizationID, "member@example.com", orgmodel.RoleViewer, "request")
-	require.NoError(t, err)
-	_, exists := store.values[key]
-	require.False(t, exists)
 }
 
 func TestRoleChangeAndMemberRemovalEmitDistinctAuditEvents(t *testing.T) {
@@ -210,7 +190,7 @@ func TestRoleChangeAndMemberRemovalEmitDistinctAuditEvents(t *testing.T) {
 		removedRole:  orgmodel.RoleMember,
 	}
 	store := &organizationCacheStore{values: make(map[string][]byte)}
-	guard := orgguard.New(authorizationMemberships{roles: map[uuid.UUID]orgmodel.Role{adminID: orgmodel.RoleAdmin}}, store, time.Minute)
+	guard := orgguard.New(authorizationMemberships{roles: map[uuid.UUID]orgmodel.Role{adminID: orgmodel.RoleAdmin}})
 	auditor := &recordingOrganizationAuditor{}
 	service := New(repository, auditor, nil, guard, store, time.Minute)
 

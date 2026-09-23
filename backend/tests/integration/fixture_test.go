@@ -48,7 +48,15 @@ func resetPostgres(t *testing.T) *pgxpool.Pool {
 		t.Skip("TEST_DATABASE_URL is not set")
 	}
 	ctx := context.Background()
-	pool, err := database.Open(ctx, url, 10)
+	pool, err := database.Open(ctx, url, database.PoolConfig{
+		MaxConns:          10,
+		MaxConnLifetime:   30 * time.Minute,
+		MaxConnIdleTime:   5 * time.Minute,
+		HealthCheckPeriod: time.Minute,
+		StatementTimeout:  15 * time.Second,
+		LockTimeout:       5 * time.Second,
+		IdleInTxTimeout:   30 * time.Second,
+	})
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 	_, err = pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`, pgx.QueryExecModeSimpleProtocol)
@@ -84,7 +92,7 @@ func newHTTPFixture(t *testing.T) *httpFixture {
 		AccessTokenTTL: 5 * time.Minute, RefreshTokenTTL: time.Hour, PasswordHashCost: 10,
 		RateLimitPerMin: 10_000, AuthRateLimitPerMin: 10_000, LoginRateLimitPerMin: 10_000,
 		LoginFailureLimit: 100, LoginFailureWindow: time.Minute,
-		OrganizationCacheTTL: time.Minute, ProjectCacheTTL: time.Minute, MembershipCacheTTL: time.Minute,
+		OrganizationCacheTTL: time.Minute, ProjectCacheTTL: time.Minute,
 		JobWorkers: 2, JobQueueSize: 128, JobMaxRetries: 1, JobInitialBackoff: time.Millisecond, JobMaxBackoff: 2 * time.Millisecond, JobTimeout: time.Second,
 		StaleTaskAfter: 72 * time.Hour, StaleTaskScanInterval: time.Hour, ProjectStatisticsRefreshInterval: time.Hour, SessionCleanupInterval: time.Hour,
 	}

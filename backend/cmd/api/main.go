@@ -34,7 +34,16 @@ func main() {
 		log.Fatal().Err(err).Msg("tracing startup failed")
 	}
 
-	db, err := database.Open(ctx, cfg.DatabaseURL, cfg.DatabaseMaxConns, observability.NewPGXTracer())
+	db, err := database.Open(ctx, cfg.DatabaseURL, database.PoolConfig{
+		MaxConns:          cfg.DatabaseMaxConns,
+		MinConns:          cfg.DatabaseMinConns,
+		MaxConnLifetime:   cfg.DatabaseMaxConnLifetime,
+		MaxConnIdleTime:   cfg.DatabaseMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DatabaseHealthCheckPeriod,
+		StatementTimeout:  cfg.DatabaseStatementTimeout,
+		LockTimeout:       cfg.DatabaseLockTimeout,
+		IdleInTxTimeout:   cfg.DatabaseIdleInTxTimeout,
+	}, observability.NewPGXTracer())
 	if err != nil {
 		log.Fatal().Err(err).Msg("database startup failed")
 	}
@@ -45,7 +54,15 @@ func main() {
 
 	a := app.New(cfg, db, cacheClient, log)
 	a.JobScheduler.Start(ctx)
-	server := &http.Server{Addr: cfg.HTTPAddr, Handler: a.Router, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           a.Router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	serverErrors := make(chan error, 1)
 	go func() {
 		log.Info().Str("addr", cfg.HTTPAddr).Msg("server listening")
@@ -65,6 +82,9 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Error().Err(err).Msg("graceful shutdown failed")
+		if closeErr := server.Close(); closeErr != nil {
+			log.Error().Err(closeErr).Msg("forced HTTP shutdown failed")
+		}
 	}
 	cancel()
 	a.JobScheduler.Stop()

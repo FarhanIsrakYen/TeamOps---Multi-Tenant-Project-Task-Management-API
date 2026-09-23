@@ -17,7 +17,6 @@ type Config struct {
 	RedisPassword                    string
 	OrganizationCacheTTL             time.Duration
 	ProjectCacheTTL                  time.Duration
-	MembershipCacheTTL               time.Duration
 	JWTSecret                        string
 	JWTIssuer                        string
 	JWTAudience                      string
@@ -48,9 +47,19 @@ type Config struct {
 	OTelServiceName                  string
 	OTelSampleRatio                  float64
 	DatabaseMaxConns                 int32
+	DatabaseMinConns                 int32
+	DatabaseMaxConnLifetime          time.Duration
+	DatabaseMaxConnIdleTime          time.Duration
+	DatabaseHealthCheckPeriod        time.Duration
+	DatabaseStatementTimeout         time.Duration
+	DatabaseLockTimeout              time.Duration
+	DatabaseIdleInTxTimeout          time.Duration
 }
 
 func Load() (Config, error) {
+	if err := validateTypedEnvironment(); err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		Environment:                      env("APP_ENV", "development"),
 		HTTPAddr:                         env("HTTP_ADDR", ":8080"),
@@ -59,7 +68,6 @@ func Load() (Config, error) {
 		RedisPassword:                    os.Getenv("REDIS_PASSWORD"),
 		OrganizationCacheTTL:             duration("ORGANIZATION_CACHE_TTL", 5*time.Minute),
 		ProjectCacheTTL:                  duration("PROJECT_CACHE_TTL", 5*time.Minute),
-		MembershipCacheTTL:               duration("MEMBERSHIP_CACHE_TTL", 30*time.Second),
 		JWTSecret:                        os.Getenv("JWT_SECRET"),
 		JWTIssuer:                        env("JWT_ISSUER", "teamops-api"),
 		JWTAudience:                      env("JWT_AUDIENCE", "teamops-web"),
@@ -90,12 +98,28 @@ func Load() (Config, error) {
 		OTelServiceName:                  env("OTEL_SERVICE_NAME", "teamops-api"),
 		OTelSampleRatio:                  decimal("OTEL_TRACE_SAMPLE_RATIO", 0.1),
 		DatabaseMaxConns:                 int32(integer("DATABASE_MAX_CONNS", 20)),
+		DatabaseMinConns:                 int32(integer("DATABASE_MIN_CONNS", 2)),
+		DatabaseMaxConnLifetime:          duration("DATABASE_MAX_CONN_LIFETIME", 30*time.Minute),
+		DatabaseMaxConnIdleTime:          duration("DATABASE_MAX_CONN_IDLE_TIME", 5*time.Minute),
+		DatabaseHealthCheckPeriod:        duration("DATABASE_HEALTH_CHECK_PERIOD", time.Minute),
+		DatabaseStatementTimeout:         duration("DATABASE_STATEMENT_TIMEOUT", 15*time.Second),
+		DatabaseLockTimeout:              duration("DATABASE_LOCK_TIMEOUT", 5*time.Second),
+		DatabaseIdleInTxTimeout:          duration("DATABASE_IDLE_IN_TRANSACTION_TIMEOUT", 30*time.Second),
 	}
 	if len(c.JWTSecret) < 32 {
 		return Config{}, fmt.Errorf("JWT_SECRET must be at least 32 characters")
 	}
 	if c.JWTIssuer == "" || c.JWTAudience == "" {
 		return Config{}, fmt.Errorf("JWT_ISSUER and JWT_AUDIENCE must not be empty")
+	}
+	if c.AccessTokenTTL <= 0 || c.AccessTokenTTL > time.Hour || c.RefreshTokenTTL <= c.AccessTokenTTL || c.RefreshTokenTTL > 90*24*time.Hour || c.ShutdownTimeout <= 0 {
+		return Config{}, fmt.Errorf("token TTLs and shutdown timeout are invalid")
+	}
+	if c.OrganizationCacheTTL < 0 || c.ProjectCacheTTL < 0 {
+		return Config{}, fmt.Errorf("cache TTLs must not be negative")
+	}
+	if c.DatabaseMaxConns < 1 || c.DatabaseMinConns < 0 || c.DatabaseMinConns > c.DatabaseMaxConns || c.DatabaseMaxConnLifetime <= 0 || c.DatabaseMaxConnIdleTime <= 0 || c.DatabaseHealthCheckPeriod <= 0 || c.DatabaseStatementTimeout <= 0 || c.DatabaseLockTimeout <= 0 || c.DatabaseIdleInTxTimeout <= 0 {
+		return Config{}, fmt.Errorf("database pool settings are invalid")
 	}
 	if c.PasswordHashCost < 10 || c.PasswordHashCost > 14 {
 		return Config{}, fmt.Errorf("BCRYPT_COST must be between 10 and 14")
@@ -128,6 +152,45 @@ func Load() (Config, error) {
 		}
 	}
 	return c, nil
+}
+
+func validateTypedEnvironment() error {
+	durationKeys := []string{
+		"ORGANIZATION_CACHE_TTL", "PROJECT_CACHE_TTL", "ACCESS_TOKEN_TTL", "REFRESH_TOKEN_TTL", "SHUTDOWN_TIMEOUT",
+		"LOGIN_FAILURE_WINDOW", "JOB_INITIAL_BACKOFF", "JOB_MAX_BACKOFF", "JOB_TIMEOUT", "STALE_TASK_AFTER",
+		"STALE_TASK_SCAN_INTERVAL", "PROJECT_STATISTICS_REFRESH_INTERVAL", "SESSION_CLEANUP_INTERVAL",
+		"DATABASE_MAX_CONN_LIFETIME", "DATABASE_MAX_CONN_IDLE_TIME", "DATABASE_HEALTH_CHECK_PERIOD",
+		"DATABASE_STATEMENT_TIMEOUT", "DATABASE_LOCK_TIMEOUT", "DATABASE_IDLE_IN_TRANSACTION_TIMEOUT",
+	}
+	for _, key := range durationKeys {
+		if raw := os.Getenv(key); raw != "" {
+			if _, err := time.ParseDuration(raw); err != nil {
+				return fmt.Errorf("%s must be a valid duration: %w", key, err)
+			}
+		}
+	}
+	integerKeys := []string{
+		"BCRYPT_COST", "RATE_LIMIT_PER_MIN", "AUTH_RATE_LIMIT_PER_MIN", "LOGIN_RATE_LIMIT_PER_MIN", "LOGIN_FAILURE_LIMIT",
+		"REQUEST_BODY_MAX_BYTES", "JOB_QUEUE_SIZE", "JOB_WORKERS", "JOB_MAX_RETRIES", "DATABASE_MAX_CONNS", "DATABASE_MIN_CONNS",
+	}
+	for _, key := range integerKeys {
+		if raw := os.Getenv(key); raw != "" {
+			if _, err := strconv.Atoi(raw); err != nil {
+				return fmt.Errorf("%s must be a valid integer: %w", key, err)
+			}
+		}
+	}
+	if raw := os.Getenv("OTEL_EXPORTER_OTLP_INSECURE"); raw != "" {
+		if _, err := strconv.ParseBool(raw); err != nil {
+			return fmt.Errorf("OTEL_EXPORTER_OTLP_INSECURE must be a valid boolean: %w", err)
+		}
+	}
+	if raw := os.Getenv("OTEL_TRACE_SAMPLE_RATIO"); raw != "" {
+		if _, err := strconv.ParseFloat(raw, 64); err != nil {
+			return fmt.Errorf("OTEL_TRACE_SAMPLE_RATIO must be a valid number: %w", err)
+		}
+	}
+	return nil
 }
 
 func env(key, fallback string) string {

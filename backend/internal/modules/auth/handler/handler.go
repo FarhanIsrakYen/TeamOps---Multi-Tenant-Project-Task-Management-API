@@ -7,7 +7,7 @@ import (
 	authguard "github.com/example/teamops/backend/internal/modules/auth/guard"
 	authsvc "github.com/example/teamops/backend/internal/modules/auth/service"
 	"github.com/example/teamops/backend/internal/platform/observability"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	sharedrequest "github.com/example/teamops/backend/internal/shared/request"
 	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"

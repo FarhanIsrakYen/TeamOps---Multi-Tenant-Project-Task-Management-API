@@ -3,13 +3,15 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	authmodel "github.com/example/teamops/backend/internal/modules/auth/model"
 	usermodel "github.com/example/teamops/backend/internal/modules/users/model"
 	sharedauth "github.com/example/teamops/backend/internal/shared/auth"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -232,4 +234,15 @@ func TestAuthenticationSuccessesEmitAuditEventsWithoutSecrets(t *testing.T) {
 	require.NoError(t, service.Logout(context.Background(), loggedIn.RefreshToken))
 	require.NotEmpty(t, registered.RefreshToken)
 	require.Equal(t, []string{"user.registered", "auth.login", "auth.logout"}, auditor.actions)
+}
+
+func TestSessionMetadataIsValidAndBounded(t *testing.T) {
+	t.Parallel()
+	agent, ip := sanitizeSessionMetadata(strings.Repeat("界", 600), "not-an-ip")
+	require.True(t, utf8.ValidString(agent))
+	require.Equal(t, 512, utf8.RuneCountInString(agent))
+	require.Empty(t, ip)
+
+	_, ip = sanitizeSessionMetadata("agent", "2001:0db8::1")
+	require.Equal(t, "2001:db8::1", ip)
 }

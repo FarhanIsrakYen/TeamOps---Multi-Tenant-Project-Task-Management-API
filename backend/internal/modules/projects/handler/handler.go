@@ -7,7 +7,7 @@ import (
 	"github.com/example/teamops/backend/internal/modules/projects/dto"
 	"github.com/example/teamops/backend/internal/modules/projects/model"
 	projectsvc "github.com/example/teamops/backend/internal/modules/projects/service"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	sharedrequest "github.com/example/teamops/backend/internal/shared/request"
 	"github.com/example/teamops/backend/internal/shared/response"

@@ -213,7 +213,7 @@ paths:
     patch:
       tags: [Organizations]
       operationId: updateOrganization
-      summary: Update organization settings (OWNER or ADMIN)
+      summary: Update organization settings (OWNER only)
       security: [{ bearerAuth: [] }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/OrganizationUpdateRequest' } } } }
       responses:

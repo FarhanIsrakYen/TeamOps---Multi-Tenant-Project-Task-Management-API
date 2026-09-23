@@ -70,7 +70,7 @@ func TestHTTPAuthenticationAuthorizationCRUDAndIDOR(t *testing.T) {
 			wantStatus                int
 		}{
 			{name: "user A cannot read user B organization", method: http.MethodGet, path: "/api/v1/organizations/" + organizationB.ID.String(), token: ownerA.AccessToken, wantStatus: http.StatusNotFound},
-			{name: "organization A member cannot read organization B project", method: http.MethodGet, path: "/api/v1/projects/" + projectB.ID.String(), token: member.AccessToken, wantStatus: http.StatusForbidden},
+			{name: "organization A member cannot read organization B project", method: http.MethodGet, path: "/api/v1/projects/" + projectB.ID.String(), token: member.AccessToken, wantStatus: http.StatusNotFound},
 			{name: "viewer cannot modify task", method: http.MethodPatch, path: "/api/v1/tasks/" + task.ID.String(), token: viewer.AccessToken, body: map[string]any{"priority": "HIGH", "version": task.Version}, wantStatus: http.StatusForbidden},
 			{name: "member cannot modify membership", method: http.MethodPost, path: "/api/v1/organizations/" + organizationA.ID.String() + "/members", token: member.AccessToken, body: map[string]any{"email": ownerB.User.Email, "role": "VIEWER"}, wantStatus: http.StatusForbidden},
 			{name: "admin cannot delete organization", method: http.MethodDelete, path: "/api/v1/organizations/" + organizationA.ID.String(), token: admin.AccessToken, wantStatus: http.StatusForbidden},

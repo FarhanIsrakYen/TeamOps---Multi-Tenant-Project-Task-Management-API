@@ -1,10 +1,13 @@
 package model
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var ErrLabelNotInOrganization = errors.New("label does not belong to task organization")
 
 type Status string
 

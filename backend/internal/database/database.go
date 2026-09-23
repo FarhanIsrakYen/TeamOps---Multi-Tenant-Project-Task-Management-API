@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -26,6 +28,17 @@ type Transactor interface {
 
 type PGXTransactor struct{ pool *pgxpool.Pool }
 type transactionContextKey struct{}
+
+type PoolConfig struct {
+	MaxConns          int32
+	MinConns          int32
+	MaxConnLifetime   time.Duration
+	MaxConnIdleTime   time.Duration
+	HealthCheckPeriod time.Duration
+	StatementTimeout  time.Duration
+	LockTimeout       time.Duration
+	IdleInTxTimeout   time.Duration
+}
 
 func NewTransactor(pool *pgxpool.Pool) *PGXTransactor {
 	return &PGXTransactor{pool: pool}
@@ -61,12 +74,22 @@ func (t *PGXTransactor) WithinTransaction(ctx context.Context, fn func(context.C
 	return nil
 }
 
-func Open(ctx context.Context, url string, maxConns int32, tracers ...pgx.QueryTracer) (*pgxpool.Pool, error) {
+func Open(ctx context.Context, url string, options PoolConfig, tracers ...pgx.QueryTracer) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, fmt.Errorf("parse database config: %w", err)
 	}
-	cfg.MaxConns = maxConns
+	cfg.MaxConns = options.MaxConns
+	cfg.MinConns = options.MinConns
+	cfg.MaxConnLifetime = options.MaxConnLifetime
+	cfg.MaxConnIdleTime = options.MaxConnIdleTime
+	cfg.HealthCheckPeriod = options.HealthCheckPeriod
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(options.StatementTimeout.Milliseconds(), 10)
+	cfg.ConnConfig.RuntimeParams["lock_timeout"] = strconv.FormatInt(options.LockTimeout.Milliseconds(), 10)
+	cfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = strconv.FormatInt(options.IdleInTxTimeout.Milliseconds(), 10)
 	if len(tracers) > 0 {
 		cfg.ConnConfig.Tracer = tracers[0]
 	}

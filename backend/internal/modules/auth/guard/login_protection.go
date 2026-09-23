@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/example/teamops/backend/internal/cache"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 )
 
 type AttemptStore interface {

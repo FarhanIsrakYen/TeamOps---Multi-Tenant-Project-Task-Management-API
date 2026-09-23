@@ -18,7 +18,9 @@ import (
 	taskmodel "github.com/example/teamops/backend/internal/modules/tasks/model"
 	taskrepo "github.com/example/teamops/backend/internal/modules/tasks/repository"
 	usersrepo "github.com/example/teamops/backend/internal/modules/users/repository"
+	"github.com/example/teamops/backend/internal/platform/jobs"
 	"github.com/example/teamops/backend/internal/shared/pagination"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 )
@@ -82,6 +84,18 @@ func TestOrganizationCreationIsTransactionalAndTenantScoped(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, taskPage)
 	require.EqualValues(t, 1, taskTotal)
+	label, err := tasks.CreateLabel(ctx, created.ID, "Security", "#336699")
+	require.NoError(t, err)
+	require.NoError(t, tasks.SetLabels(ctx, task.ID, created.ID, []uuid.UUID{label.ID}))
+	require.ErrorIs(t, tasks.SetLabels(ctx, task.ID, created.ID, []uuid.UUID{uuid.New()}), taskmodel.ErrLabelNotInOrganization)
+
+	maintenance := jobs.NewRepository(pool)
+	refreshed, err := maintenance.RefreshProjectStatistics(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, refreshed)
+	refreshed, err = maintenance.RefreshProjectStatistics(ctx)
+	require.NoError(t, err)
+	require.Zero(t, refreshed, "unchanged statistics should not rewrite and lock project rows")
 
 	audits := auditrepo.New(pool)
 	organizationID, actorID := created.ID, user.ID

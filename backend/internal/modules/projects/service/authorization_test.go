@@ -10,7 +10,7 @@ import (
 	orgmodel "github.com/example/teamops/backend/internal/modules/organizations/model"
 	projectguard "github.com/example/teamops/backend/internal/modules/projects/guard"
 	projectmodel "github.com/example/teamops/backend/internal/modules/projects/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -67,7 +67,7 @@ func TestOnlyOwnerAndAdminCanManageProjects(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			userID := uuid.New()
 			repository := &projectRepository{}
-			organizations := orgguard.New(projectMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: tt.role}}, nil, 0)
+			organizations := orgguard.New(projectMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: tt.role}})
 			access := projectguard.New(organizations)
 			projectCache := cache.New("127.0.0.1:0", "")
 			t.Cleanup(func() { _ = projectCache.Close() })

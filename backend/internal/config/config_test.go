@@ -21,7 +21,6 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("CORS_ORIGINS", "https://one.example, https://two.example")
 	t.Setenv("ORGANIZATION_CACHE_TTL", "2m")
 	t.Setenv("PROJECT_CACHE_TTL", "3m")
-	t.Setenv("MEMBERSHIP_CACHE_TTL", "15s")
 	t.Setenv("AUTH_RATE_LIMIT_PER_MIN", "21")
 	t.Setenv("LOGIN_RATE_LIMIT_PER_MIN", "7")
 	t.Setenv("LOGIN_FAILURE_LIMIT", "4")
@@ -36,6 +35,14 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
 	t.Setenv("OTEL_SERVICE_NAME", "teamops-test")
 	t.Setenv("OTEL_TRACE_SAMPLE_RATIO", "0.25")
+	t.Setenv("DATABASE_MAX_CONNS", "30")
+	t.Setenv("DATABASE_MIN_CONNS", "4")
+	t.Setenv("DATABASE_MAX_CONN_LIFETIME", "45m")
+	t.Setenv("DATABASE_MAX_CONN_IDLE_TIME", "10m")
+	t.Setenv("DATABASE_HEALTH_CHECK_PERIOD", "30s")
+	t.Setenv("DATABASE_STATEMENT_TIMEOUT", "20s")
+	t.Setenv("DATABASE_LOCK_TIMEOUT", "3s")
+	t.Setenv("DATABASE_IDLE_IN_TRANSACTION_TIMEOUT", "25s")
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.Equal(t, "teamops-test-api", cfg.JWTIssuer)
@@ -45,7 +52,6 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	require.Equal(t, []string{"https://one.example", "https://two.example"}, cfg.CORSOrigins)
 	require.Equal(t, 2*time.Minute, cfg.OrganizationCacheTTL)
 	require.Equal(t, 3*time.Minute, cfg.ProjectCacheTTL)
-	require.Equal(t, 15*time.Second, cfg.MembershipCacheTTL)
 	require.Equal(t, 21, cfg.AuthRateLimitPerMin)
 	require.Equal(t, 7, cfg.LoginRateLimitPerMin)
 	require.Equal(t, 4, cfg.LoginFailureLimit)
@@ -60,6 +66,29 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	require.True(t, cfg.OTelInsecure)
 	require.Equal(t, "teamops-test", cfg.OTelServiceName)
 	require.Equal(t, 0.25, cfg.OTelSampleRatio)
+	require.Equal(t, int32(30), cfg.DatabaseMaxConns)
+	require.Equal(t, int32(4), cfg.DatabaseMinConns)
+	require.Equal(t, 45*time.Minute, cfg.DatabaseMaxConnLifetime)
+	require.Equal(t, 10*time.Minute, cfg.DatabaseMaxConnIdleTime)
+	require.Equal(t, 30*time.Second, cfg.DatabaseHealthCheckPeriod)
+	require.Equal(t, 20*time.Second, cfg.DatabaseStatementTimeout)
+	require.Equal(t, 3*time.Second, cfg.DatabaseLockTimeout)
+	require.Equal(t, 25*time.Second, cfg.DatabaseIdleInTxTimeout)
+}
+
+func TestLoadRejectsInvalidTokenAndPoolSettings(t *testing.T) {
+	t.Setenv("JWT_SECRET", "this-is-a-long-enough-test-secret-value")
+	t.Setenv("ACCESS_TOKEN_TTL", "2h")
+	t.Setenv("REFRESH_TOKEN_TTL", "1h")
+	_, err := Load()
+	require.EqualError(t, err, "token TTLs and shutdown timeout are invalid")
+
+	t.Setenv("ACCESS_TOKEN_TTL", "15m")
+	t.Setenv("REFRESH_TOKEN_TTL", "168h")
+	t.Setenv("DATABASE_MAX_CONNS", "2")
+	t.Setenv("DATABASE_MIN_CONNS", "3")
+	_, err = Load()
+	require.EqualError(t, err, "database pool settings are invalid")
 }
 
 func TestLoadRejectsUnsafeBcryptCost(t *testing.T) {
@@ -67,6 +96,13 @@ func TestLoadRejectsUnsafeBcryptCost(t *testing.T) {
 	t.Setenv("BCRYPT_COST", "9")
 	_, err := Load()
 	require.EqualError(t, err, "BCRYPT_COST must be between 10 and 14")
+}
+
+func TestLoadRejectsMalformedTypedConfiguration(t *testing.T) {
+	t.Setenv("JWT_SECRET", "this-is-a-long-enough-test-secret-value")
+	t.Setenv("DATABASE_MAX_CONNS", "many")
+	_, err := Load()
+	require.ErrorContains(t, err, "DATABASE_MAX_CONNS must be a valid integer")
 }
 
 func TestLoadRejectsUnsafeCORSAndProxyConfiguration(t *testing.T) {

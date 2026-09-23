@@ -11,7 +11,7 @@ import (
 	projectmodel "github.com/example/teamops/backend/internal/modules/projects/model"
 	taskguard "github.com/example/teamops/backend/internal/modules/tasks/guard"
 	taskmodel "github.com/example/teamops/backend/internal/modules/tasks/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -31,11 +31,12 @@ func (m taskMemberships) Role(_ context.Context, organizationID, userID uuid.UUI
 }
 
 type taskRepository struct {
-	mu        sync.Mutex
-	task      taskmodel.Task
-	deleted   bool
-	commented bool
-	updated   bool
+	mu           sync.Mutex
+	task         taskmodel.Task
+	deleted      bool
+	commented    bool
+	updated      bool
+	setLabelsErr error
 }
 
 func (r *taskRepository) Create(_ context.Context, task taskmodel.Task) (taskmodel.Task, error) {
@@ -82,7 +83,7 @@ func (r *taskRepository) Labels(context.Context, uuid.UUID) ([]taskmodel.Label, 
 	return nil, nil
 }
 func (r *taskRepository) SetLabels(context.Context, uuid.UUID, uuid.UUID, []uuid.UUID) error {
-	return nil
+	return r.setLabelsErr
 }
 
 type taskProjects struct{ project projectmodel.Project }
@@ -106,7 +107,7 @@ func taskServiceForRole(role orgmodel.Role) (*Service, *taskRepository, uuid.UUI
 	taskID := uuid.New()
 	projectID := uuid.New()
 	repository := &taskRepository{task: taskmodel.Task{ID: taskID, OrganizationID: organizationID, ProjectID: projectID, Title: "Task", Status: taskmodel.StatusTODO, Priority: taskmodel.PriorityMedium, Version: 1}}
-	organizations := orgguard.New(taskMemberships{roles: map[[2]uuid.UUID]orgmodel.Role{{organizationID, userID}: role}}, nil, 0)
+	organizations := orgguard.New(taskMemberships{roles: map[[2]uuid.UUID]orgmodel.Role{{organizationID, userID}: role}})
 	projects := taskProjects{project: projectmodel.Project{ID: projectID, OrganizationID: organizationID}}
 	service := New(repository, repository, repository, projects, organizations, projectguard.New(organizations), taskguard.New(organizations), taskAuditor{})
 	return service, repository, userID, taskID
@@ -156,7 +157,7 @@ func TestTaskAccessRejectsNonMemberAndMissingResource(t *testing.T) {
 	t.Parallel()
 	service, _, _, taskID := taskServiceForRole(orgmodel.RoleOwner)
 	_, err := service.Get(context.Background(), uuid.New(), taskID)
-	require.ErrorIs(t, err, apperror.ErrForbidden)
+	require.ErrorIs(t, err, apperror.ErrNotFound)
 	_, err = service.Get(context.Background(), uuid.New(), uuid.New())
 	require.ErrorIs(t, err, apperror.ErrNotFound)
 }

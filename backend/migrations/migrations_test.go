@@ -72,3 +72,25 @@ func TestBackgroundJobStateMigrationIsReversible(t *testing.T) {
 	require.Contains(t, string(down), "DROP INDEX tasks_stale_detection_idx")
 	require.Contains(t, string(down), "DROP COLUMN is_stale")
 }
+
+func TestProductionHardeningMigrationProtectsTenantAssignmentsAndSearches(t *testing.T) {
+	t.Parallel()
+	up, err := os.ReadFile("000005_production_hardening.up.sql")
+	require.NoError(t, err)
+	upSQL := string(up)
+	for _, fragment := range []string{
+		"tasks_assignee_membership_fk",
+		"refresh_tokens_user_agent_length",
+		"REFERENCES organization_members(organization_id, user_id)",
+		"ON DELETE SET NULL (assignee_id)",
+		"projects_name_search_trgm_idx",
+		"tasks_title_search_trgm_idx",
+		"audit_logs_actor_user_lookup_idx",
+	} {
+		require.Contains(t, upSQL, fragment)
+	}
+
+	down, err := os.ReadFile("000005_production_hardening.down.sql")
+	require.NoError(t, err)
+	require.Contains(t, string(down), "DROP CONSTRAINT tasks_assignee_membership_fk")
+}

@@ -3,11 +3,9 @@ package guard
 import (
 	"context"
 	"errors"
-	"time"
 
-	"github.com/example/teamops/backend/internal/cache"
 	orgmodel "github.com/example/teamops/backend/internal/modules/organizations/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -18,8 +16,6 @@ type MembershipReader interface {
 
 type Guard struct {
 	memberships MembershipReader
-	cache       cache.Store
-	cacheTTL    time.Duration
 }
 
 type Permission string
@@ -37,8 +33,8 @@ const (
 	ViewAuditLogs      Permission = "audit:read"
 )
 
-func New(memberships MembershipReader, store cache.Store, ttl time.Duration) *Guard {
-	return &Guard{memberships: memberships, cache: store, cacheTTL: ttl}
+func New(memberships MembershipReader) *Guard {
+	return &Guard{memberships: memberships}
 }
 
 func (g *Guard) RequireOrganizationRole(ctx context.Context, userID, orgID uuid.UUID, allowed ...orgmodel.Role) (orgmodel.Role, error) {
@@ -58,31 +54,14 @@ func (g *Guard) RequireOrganizationRole(ctx context.Context, userID, orgID uuid.
 }
 
 func (g *Guard) role(ctx context.Context, userID, orgID uuid.UUID) (orgmodel.Role, error) {
-	key := cache.MembershipKey(orgID.String(), userID.String())
-	if g.cache != nil && g.cacheTTL > 0 {
-		var cached struct {
-			Role orgmodel.Role `json:"role"`
-		}
-		if hit, err := g.cache.GetJSON(ctx, key, &cached); err == nil && hit && validRole(cached.Role) {
-			return cached.Role, nil
-		}
-	}
 	role, err := g.memberships.Role(ctx, orgID, userID)
 	if err != nil {
 		return "", err
 	}
-	if g.cache != nil && g.cacheTTL > 0 {
-		_ = g.cache.SetJSON(ctx, key, struct {
-			Role orgmodel.Role `json:"role"`
-		}{Role: role}, g.cacheTTL)
+	if !validRole(role) {
+		return "", apperror.ErrForbidden
 	}
 	return role, nil
-}
-
-func (g *Guard) InvalidateMembership(ctx context.Context, orgID, userID uuid.UUID) {
-	if g.cache != nil {
-		_ = g.cache.Delete(ctx, cache.MembershipKey(orgID.String(), userID.String()))
-	}
 }
 
 func validRole(role orgmodel.Role) bool {
@@ -113,7 +92,7 @@ func allows(role orgmodel.Role, permission Permission) bool {
 		}
 	case orgmodel.RoleAdmin:
 		switch permission {
-		case ReadOrganization, ManageOrganization, ManageMembers, ManageProjects, CreateUpdateTasks, DeleteTasks, CommentTasks, ManageLabels, ViewAuditLogs:
+		case ReadOrganization, ManageMembers, ManageProjects, CreateUpdateTasks, DeleteTasks, CommentTasks, ManageLabels, ViewAuditLogs:
 			return true
 		}
 	case orgmodel.RoleMember:

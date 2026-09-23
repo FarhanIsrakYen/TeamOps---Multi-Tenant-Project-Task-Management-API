@@ -6,7 +6,9 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /teamops ./cmd/api
 
 FROM alpine:3.21 AS production
-RUN addgroup -S app && adduser -S -G app app
+RUN apk add --no-cache ca-certificates \
+  && addgroup -S app \
+  && adduser -S -G app app
 COPY --from=build /teamops /usr/local/bin/teamops
 USER app
 EXPOSE 8080

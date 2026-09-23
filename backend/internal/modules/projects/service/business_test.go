@@ -11,7 +11,7 @@ import (
 	orgmodel "github.com/example/teamops/backend/internal/modules/organizations/model"
 	projectguard "github.com/example/teamops/backend/internal/modules/projects/guard"
 	projectmodel "github.com/example/teamops/backend/internal/modules/projects/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -57,7 +57,7 @@ func TestConcurrentProjectUpdatesRejectStaleVersion(t *testing.T) {
 	userID := uuid.New()
 	projectID := uuid.New()
 	repository := &lockingProjectRepository{project: projectmodel.Project{ID: projectID, OrganizationID: organizationID, Name: "Original", Description: "Preserved", Version: 1}}
-	organizations := orgguard.New(projectMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: orgmodel.RoleAdmin}}, nil, 0)
+	organizations := orgguard.New(projectMemberships{roles: map[uuid.UUID]orgmodel.Role{userID: orgmodel.RoleAdmin}})
 	projectCache := cache.New("127.0.0.1:0", "")
 	t.Cleanup(func() { _ = projectCache.Close() })
 	service := New(repository, organizations, projectguard.New(organizations), projectCache, time.Minute, projectAuditor{})

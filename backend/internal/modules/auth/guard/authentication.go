@@ -5,7 +5,7 @@ import (
 
 	"github.com/example/teamops/backend/internal/platform/observability"
 	sharedauth "github.com/example/teamops/backend/internal/shared/auth"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 )

@@ -6,7 +6,7 @@ import (
 	"github.com/example/teamops/backend/internal/modules/tasks/dto"
 	"github.com/example/teamops/backend/internal/modules/tasks/model"
 	tasksvc "github.com/example/teamops/backend/internal/modules/tasks/service"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/pagination"
 	sharedrequest "github.com/example/teamops/backend/internal/shared/request"
 	"github.com/example/teamops/backend/internal/shared/response"

@@ -71,7 +71,9 @@ func (r *Repository) List(ctx context.Context, orgID uuid.UUID, p pagination.Par
 		if err := rows.Scan(&x.ID, &x.OrganizationID, &x.ActorUserID, &x.Action, &x.ResourceType, &x.ResourceID, &raw, &x.RequestID, &x.IPAddress, &x.UserAgent, &x.CreatedAt, &total); err != nil {
 			return nil, 0, err
 		}
-		_ = json.Unmarshal(raw, &x.Metadata)
+		if err := json.Unmarshal(raw, &x.Metadata); err != nil {
+			return nil, 0, fmt.Errorf("decode audit metadata: %w", err)
+		}
 		out = append(out, x)
 	}
 	if err := rows.Err(); err != nil {

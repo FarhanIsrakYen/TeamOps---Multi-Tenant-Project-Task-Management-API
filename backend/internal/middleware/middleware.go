@@ -11,7 +11,7 @@ import (
 	"github.com/example/teamops/backend/internal/cache"
 	"github.com/example/teamops/backend/internal/platform/observability"
 	sharedaudit "github.com/example/teamops/backend/internal/shared/audit"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/example/teamops/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -116,6 +116,9 @@ func Logging(log zerolog.Logger) gin.HandlerFunc {
 			event = log.Warn()
 		}
 		event = event.Str("request_id", c.GetString("request_id")).Str("method", c.Request.Method).Str("path", c.Request.URL.Path).Int("status", status).Dur("duration", time.Since(start))
+		if status >= http.StatusInternalServerError && len(c.Errors) > 0 {
+			event = event.Err(c.Errors.Last().Err)
+		}
 		if userID := requestUserID(c); userID != "" {
 			event = event.Str("user_id", userID)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/mail"
 	"strings"
 	"time"
@@ -13,7 +14,7 @@ import (
 	authmodel "github.com/example/teamops/backend/internal/modules/auth/model"
 	usermodel "github.com/example/teamops/backend/internal/modules/users/model"
 	sharedauth "github.com/example/teamops/backend/internal/shared/auth"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -157,15 +158,16 @@ func (s *Service) Refresh(ctx context.Context, raw, agent, ip string) (Result, e
 }
 
 func sanitizeSessionMetadata(agent, ip string) (string, string) {
-	agent = strings.TrimSpace(agent)
-	if len(agent) > 512 {
-		agent = agent[:512]
+	agentRunes := []rune(strings.TrimSpace(agent))
+	if len(agentRunes) > 512 {
+		agentRunes = agentRunes[:512]
 	}
-	ip = strings.TrimSpace(ip)
-	if len(ip) > 64 {
-		ip = ""
+	agent = string(agentRunes)
+	parsedIP := net.ParseIP(strings.TrimSpace(ip))
+	if parsedIP == nil {
+		return agent, ""
 	}
-	return agent, ip
+	return agent, parsedIP.String()
 }
 func (s *Service) Logout(ctx context.Context, raw string) error {
 	userID, err := s.sessions.RevokeSession(ctx, sharedauth.HashRefreshToken(raw))

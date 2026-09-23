@@ -6,7 +6,7 @@ import (
 	orgguard "github.com/example/teamops/backend/internal/modules/organizations/guard"
 	orgmodel "github.com/example/teamops/backend/internal/modules/organizations/model"
 	projectmodel "github.com/example/teamops/backend/internal/modules/projects/model"
-	"github.com/example/teamops/backend/internal/shared/errors"
+	apperror "github.com/example/teamops/backend/internal/shared/errors"
 	"github.com/google/uuid"
 )
 

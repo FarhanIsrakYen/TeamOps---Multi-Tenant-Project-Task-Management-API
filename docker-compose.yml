@@ -6,7 +6,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-teamops}
       POSTGRES_USER: ${POSTGRES_USER:-teamops}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-teamops}
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes: [postgres_data:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -15,7 +15,7 @@ services:
       retries: 10
   redis:
     image: redis:7.4-alpine
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
     command: ["redis-server", "--appendonly", "yes"]
     volumes: [redis_data:/data]
     healthcheck:
@@ -40,7 +40,16 @@ services:
       HTTP_ADDR: :8080
       DATABASE_URL: postgres://${POSTGRES_USER:-teamops}:${POSTGRES_PASSWORD:-teamops}@postgres:5432/${POSTGRES_DB:-teamops}?sslmode=disable
       REDIS_ADDR: redis:6379
-      JWT_SECRET: ${JWT_SECRET:-development-secret-change-me-32-bytes}
+      DATABASE_MAX_CONNS: ${DATABASE_MAX_CONNS:-20}
+      DATABASE_MIN_CONNS: ${DATABASE_MIN_CONNS:-2}
+      DATABASE_MAX_CONN_LIFETIME: ${DATABASE_MAX_CONN_LIFETIME:-30m}
+      DATABASE_MAX_CONN_IDLE_TIME: ${DATABASE_MAX_CONN_IDLE_TIME:-5m}
+      DATABASE_HEALTH_CHECK_PERIOD: ${DATABASE_HEALTH_CHECK_PERIOD:-1m}
+      DATABASE_STATEMENT_TIMEOUT: ${DATABASE_STATEMENT_TIMEOUT:-15s}
+      DATABASE_LOCK_TIMEOUT: ${DATABASE_LOCK_TIMEOUT:-5s}
+      DATABASE_IDLE_IN_TRANSACTION_TIMEOUT: ${DATABASE_IDLE_IN_TRANSACTION_TIMEOUT:-30s}
+      # No development fallback: the backend fails closed when this is absent or shorter than 32 characters.
+      JWT_SECRET: ${JWT_SECRET}
       JWT_ISSUER: ${JWT_ISSUER:-teamops-api}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-teamops-web}
       ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
@@ -48,7 +57,6 @@ services:
       BCRYPT_COST: ${BCRYPT_COST:-12}
       ORGANIZATION_CACHE_TTL: ${ORGANIZATION_CACHE_TTL:-5m}
       PROJECT_CACHE_TTL: ${PROJECT_CACHE_TTL:-5m}
-      MEMBERSHIP_CACHE_TTL: ${MEMBERSHIP_CACHE_TTL:-30s}
       RATE_LIMIT_PER_MIN: ${RATE_LIMIT_PER_MIN:-120}
       AUTH_RATE_LIMIT_PER_MIN: ${AUTH_RATE_LIMIT_PER_MIN:-30}
       LOGIN_RATE_LIMIT_PER_MIN: ${LOGIN_RATE_LIMIT_PER_MIN:-10}
